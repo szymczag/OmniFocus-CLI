@@ -15,6 +15,7 @@ environment variables (see :mod:`omnifocus.store`).
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import sys
 from datetime import datetime, timedelta
@@ -130,18 +131,27 @@ async def _get_model(force_refresh: bool = False) -> OFModel:
 
 
 @click.group()
-def cli() -> None:
+@click.option("--debug", is_flag=True, default=False,
+              help="Enable debug logging to stderr.")
+@click.pass_context
+def cli(ctx: click.Context, debug: bool) -> None:
     """OmniFocus 4 command-line interface.
 
     Reads credentials from environment variables:
 
     \b
-    OF_WEBDAV_URL          WebDAV bundle URL (required)
-    OF_WEBDAV_USER         WebDAV username (required)
-    OF_WEBDAV_PASS         WebDAV password (required)
-    OF_ENCRYPTION_PASSPHRASE  Database passphrase (if encrypted)
-    OF_CACHE_DIR           Cache directory (default: /tmp/of-cache)
+    OF_WEBDAV_URL             WebDAV bundle URL (required)
+    OF_WEBDAV_USER            WebDAV username (or embed in URL)
+    OF_WEBDAV_PASS            WebDAV password (or embed in URL)
+    OF_ENCRYPTION_PASSPHRASE  Passphrase (defaults to WebDAV password)
+    OF_CACHE_DIR              Cache directory (default: /tmp/of-cache)
     """
+    if debug:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            stream=sys.stderr,
+            format="%(levelname)s %(name)s: %(message)s",
+        )
 
 
 # ---------------------------------------------------------------------------

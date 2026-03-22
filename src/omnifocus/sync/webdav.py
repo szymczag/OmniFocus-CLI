@@ -17,12 +17,15 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from typing import AsyncIterator
 from urllib.parse import urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
 import httpx
+
+log = logging.getLogger(__name__)
 
 from omnifocus.errors import OFWebDAVError
 
@@ -238,6 +241,7 @@ class WebDAVClient:
         """
         last_exc: Exception | None = None
         for attempt in range(_MAX_RETRIES):
+            log.debug("%s %s (attempt %d/%d)", method, url, attempt + 1, _MAX_RETRIES)
             try:
                 response = await self._client.request(
                     method,
@@ -246,10 +250,12 @@ class WebDAVClient:
                     content=content,
                 )
             except httpx.RequestError as exc:
+                log.debug("Request error: %s — retrying", exc)
                 last_exc = exc
                 await asyncio.sleep(_RETRY_BASE_DELAY * (2**attempt))
                 continue
 
+            log.debug("← %d (%d bytes)", response.status_code, len(response.content))
             if response.status_code < 300:
                 return response.content
 

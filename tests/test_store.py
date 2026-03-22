@@ -51,17 +51,30 @@ class TestFromEnv:
         with pytest.raises(OFWebDAVError):
             OFocusStore.from_env()
 
-    def test_no_passphrase_when_not_set(
+    def test_passphrase_falls_back_to_webdav_pass(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """When OF_ENCRYPTION_PASSPHRASE is absent, the WebDAV password is used."""
         monkeypatch.setenv("OF_WEBDAV_URL", "https://dav.example.com/of/")
         monkeypatch.setenv("OF_WEBDAV_USER", "u")
-        monkeypatch.setenv("OF_WEBDAV_PASS", "p")
+        monkeypatch.setenv("OF_WEBDAV_PASS", "linked_pass")
         monkeypatch.delenv("OF_ENCRYPTION_PASSPHRASE", raising=False)
         store = OFocusStore.from_env()
-        assert store._passphrase is None
+        assert store._passphrase == "linked_pass"
+
+    def test_passphrase_falls_back_to_url_embedded_pass(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Credentials in URL, no separate vars → passphrase taken from URL."""
+        monkeypatch.setenv("OF_WEBDAV_URL", "https://u:url_pass@dav.example.com/of/")
+        monkeypatch.delenv("OF_WEBDAV_USER", raising=False)
+        monkeypatch.delenv("OF_WEBDAV_PASS", raising=False)
+        monkeypatch.delenv("OF_ENCRYPTION_PASSPHRASE", raising=False)
+        store = OFocusStore.from_env()
+        assert store._passphrase == "url_pass"
 
     def test_passphrase_set_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Explicit OF_ENCRYPTION_PASSPHRASE overrides the WebDAV password fallback."""
         monkeypatch.setenv("OF_WEBDAV_URL", "https://dav.example.com/of/")
         monkeypatch.setenv("OF_WEBDAV_USER", "u")
         monkeypatch.setenv("OF_WEBDAV_PASS", "p")
@@ -198,7 +211,7 @@ class TestEncryption:
         )
         encrypted = encrypt(plaintext, "passphrase123")
         store, _ = _make_store(tmp_path, baseline_bytes=encrypted, passphrase=None)
-        with pytest.raises(OFEncryptionError, match="not set"):
+        with pytest.raises(OFEncryptionError, match="no passphrase is available"):
             await store.load()
 
     @pytest.mark.asyncio

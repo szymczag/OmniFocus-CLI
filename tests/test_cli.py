@@ -440,3 +440,11 @@ class TestHelp:
         runner = CliRunner()
         result = runner.invoke(cli, ["sync", "--help"])
         assert result.exit_code == 0
+
+    def test_debug_flag_enables_logging(self) -> None:
+        """--debug must not crash and should configure logging."""
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["--debug", "sync"])
+        assert result.exit_code == 0
