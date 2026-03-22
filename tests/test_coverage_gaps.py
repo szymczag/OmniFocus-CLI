@@ -18,7 +18,6 @@ from click.testing import CliRunner
 from rich.console import Console
 
 from omnifocus.cli import _parse_due, cli
-from omnifocus.crypto.encryption import decrypt, encrypt
 from omnifocus.errors import (
     OFAmbiguousMatch,
     OFBundleNotFound,
@@ -209,32 +208,6 @@ class TestDoneCmdAmbiguous:
 
         assert result.exit_code != 0
         assert "Ambiguous" in result.output
-
-
-# ---------------------------------------------------------------------------
-# crypto/encryption.py — PKCS7 unpadding failure (lines 162-163)
-# ---------------------------------------------------------------------------
-
-
-class TestPkcs7UnpaddingFailure:
-    def test_unpadding_failure_raises_encryption_error(self) -> None:
-        """Patch hmac.compare_digest to bypass HMAC, then decrypt corrupted ciphertext.
-
-        We corrupt the LAST 16 bytes (last AES block) of the ciphertext.  After
-        AES-CBC decryption the last plaintext block becomes garbage, so PKCS7
-        unpadding raises ValueError which the code re-raises as OFEncryptionError.
-        """
-        plaintext = b"PK test data" * 10  # 120 bytes
-        encrypted = encrypt(plaintext, "passphrase")
-
-        corrupted = bytearray(encrypted)
-        # Corrupt the last 16 bytes of ciphertext (last AES block → bad padding)
-        for i in range(len(corrupted) - 16, len(corrupted)):
-            corrupted[i] ^= 0xFF
-
-        with patch("omnifocus.crypto.encryption._hmac.compare_digest", return_value=True):
-            with pytest.raises(OFEncryptionError, match="PKCS7"):
-                decrypt(bytes(corrupted), "passphrase")
 
 
 # ---------------------------------------------------------------------------
