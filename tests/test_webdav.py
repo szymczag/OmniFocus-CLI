@@ -53,14 +53,21 @@ class TestFromEnv:
     def test_missing_all_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for v in ("OF_WEBDAV_URL", "OF_WEBDAV_USER", "OF_WEBDAV_PASS"):
             monkeypatch.delenv(v, raising=False)
-        with pytest.raises(OFWebDAVError, match="Missing required environment variables"):
+        with pytest.raises(OFWebDAVError, match="OF_WEBDAV_URL"):
             WebDAVClient.from_env()
 
-    def test_missing_one_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_missing_pass_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OF_WEBDAV_URL", "https://dav.example.com/of/")
         monkeypatch.setenv("OF_WEBDAV_USER", "user")
         monkeypatch.delenv("OF_WEBDAV_PASS", raising=False)
         with pytest.raises(OFWebDAVError, match="OF_WEBDAV_PASS"):
+            WebDAVClient.from_env()
+
+    def test_missing_user_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OF_WEBDAV_URL", "https://dav.example.com/of/")
+        monkeypatch.delenv("OF_WEBDAV_USER", raising=False)
+        monkeypatch.delenv("OF_WEBDAV_PASS", raising=False)
+        with pytest.raises(OFWebDAVError, match="OF_WEBDAV_USER"):
             WebDAVClient.from_env()
 
     def test_all_vars_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -69,6 +76,35 @@ class TestFromEnv:
         monkeypatch.setenv("OF_WEBDAV_PASS", "p")
         client = WebDAVClient.from_env()
         assert client._base_url == BASE_URL
+
+    def test_credentials_embedded_in_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """https://user:pass@host/path — no separate user/pass vars needed."""
+        monkeypatch.setenv("OF_WEBDAV_URL", "https://alice:secret@dav.example.com/of/")
+        monkeypatch.delenv("OF_WEBDAV_USER", raising=False)
+        monkeypatch.delenv("OF_WEBDAV_PASS", raising=False)
+        client = WebDAVClient.from_env()
+        # Credentials must be stripped from the stored base URL
+        assert "alice" not in client._base_url
+        assert "secret" not in client._base_url
+        assert client._base_url == "https://dav.example.com/of/"
+
+    def test_explicit_vars_override_url_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """OF_WEBDAV_USER / OF_WEBDAV_PASS take precedence over URL-embedded creds."""
+        monkeypatch.setenv("OF_WEBDAV_URL", "https://wrong:wrong@dav.example.com/of/")
+        monkeypatch.setenv("OF_WEBDAV_USER", "correct_user")
+        monkeypatch.setenv("OF_WEBDAV_PASS", "correct_pass")
+        # Should not raise; explicit vars win
+        client = WebDAVClient.from_env()
+        assert client._base_url == "https://dav.example.com/of/"
+
+    def test_url_with_port_and_embedded_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Port must be preserved when stripping credentials from the URL."""
+        monkeypatch.setenv("OF_WEBDAV_URL", "https://u:p@dav.example.com:8443/of/")
+        monkeypatch.delenv("OF_WEBDAV_USER", raising=False)
+        monkeypatch.delenv("OF_WEBDAV_PASS", raising=False)
+        client = WebDAVClient.from_env()
+        assert "8443" in client._base_url
+        assert "u:p" not in client._base_url
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import os
 from typing import AsyncIterator
+from urllib.parse import urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -85,27 +86,53 @@ class WebDAVClient:
     def from_env(cls) -> WebDAVClient:
         """Construct a client from environment variables.
 
+        Credentials can be supplied in two ways (the second takes precedence):
+
+        1. Embedded in the URL: ``https://user:pass@dav.example.com/path/``
+        2. Separate variables: ``OF_WEBDAV_USER`` and ``OF_WEBDAV_PASS``
+
         Required variables:
-            OF_WEBDAV_URL: Base URL ending with ``/``.
-            OF_WEBDAV_USER: Username.
-            OF_WEBDAV_PASS: Password.
+            OF_WEBDAV_URL: Base URL, optionally with embedded credentials.
+            OF_WEBDAV_USER: Username (overrides URL-embedded user).
+            OF_WEBDAV_PASS: Password (overrides URL-embedded password).
 
         Raises:
-            OFWebDAVError: If any required environment variable is missing.
+            OFWebDAVError: If ``OF_WEBDAV_URL`` is missing, or if credentials
+                cannot be found in either the URL or the separate variables.
         """
-        missing = [
-            v for v in ("OF_WEBDAV_URL", "OF_WEBDAV_USER", "OF_WEBDAV_PASS")
-            if not os.environ.get(v)
-        ]
+        raw_url = os.environ.get("OF_WEBDAV_URL", "")
+        if not raw_url:
+            raise OFWebDAVError("Missing required environment variable: OF_WEBDAV_URL")
+
+        # Parse credentials embedded in the URL (https://user:pass@host/path)
+        parsed = urlsplit(raw_url)
+        url_user = parsed.username or ""
+        url_pass = parsed.password or ""
+
+        # Strip credentials from the URL so they are not sent twice
+        if url_user or url_pass:
+            netloc = parsed.hostname or ""
+            if parsed.port:
+                netloc += f":{parsed.port}"
+            clean_url = urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, ""))
+        else:
+            clean_url = raw_url
+
+        # Explicit env vars override URL-embedded credentials
+        username = os.environ.get("OF_WEBDAV_USER") or url_user
+        password = os.environ.get("OF_WEBDAV_PASS") or url_pass
+
+        missing = []
+        if not username:
+            missing.append("OF_WEBDAV_USER")
+        if not password:
+            missing.append("OF_WEBDAV_PASS")
         if missing:
             raise OFWebDAVError(
                 f"Missing required environment variables: {', '.join(missing)}"
             )
-        return cls(
-            base_url=os.environ["OF_WEBDAV_URL"],
-            username=os.environ["OF_WEBDAV_USER"],
-            password=os.environ["OF_WEBDAV_PASS"],
-        )
+
+        return cls(base_url=clean_url, username=username, password=password)
 
     # ------------------------------------------------------------------
     # Core operations
