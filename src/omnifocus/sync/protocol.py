@@ -23,10 +23,27 @@ Usage::
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from omnifocus.errors import OFBundleNotFound
 
 # Prefix that identifies the baseline ZIP
 _BASELINE_PREFIX = "00000000000000="
+
+
+@dataclass(frozen=True)
+class TransactionRef:
+    """Parsed metadata for a single transaction filename.
+
+    Attributes:
+        filename: Original transaction filename.
+        client_id: Client identifier stored before the ``+`` separator.
+        parent_id: Predecessor identifier stored after the ``+`` separator.
+    """
+
+    filename: str
+    client_id: str
+    parent_id: str
 
 
 def classify_bundle_files(filenames: list[str]) -> tuple[str, list[str]]:
@@ -92,3 +109,40 @@ def client_id_from_filename(filename: str) -> str | None:
     if "+" in after_eq:
         return after_eq.split("+", 1)[0]
     return after_eq or None
+
+
+def parent_id_from_filename(filename: str) -> str | None:
+    """Extract the predecessor identifier from a transaction filename.
+
+    Args:
+        filename: A ``.zip`` filename.
+
+    Returns:
+        The parent identifier string, or ``None`` if the filename does not
+        match the expected transaction format.
+    """
+    stem = filename.removesuffix(".zip")
+    if "=" not in stem:
+        return None
+    after_eq = stem.split("=", 1)[1]
+    if "+" not in after_eq:
+        return None
+    parent_id = after_eq.split("+", 1)[1]
+    return parent_id or None
+
+
+def parse_transaction_filename(filename: str) -> TransactionRef | None:
+    """Parse a transaction filename into its client and predecessor parts."""
+    client_id = client_id_from_filename(filename)
+    parent_id = parent_id_from_filename(filename)
+    if client_id is None or parent_id is None:
+        return None
+    return TransactionRef(filename=filename, client_id=client_id, parent_id=parent_id)
+
+
+def latest_transaction_ref(filenames: list[str]) -> TransactionRef | None:
+    """Return metadata for the latest transaction in the bundle listing."""
+    _, tx_names = classify_bundle_files(filenames)
+    if not tx_names:
+        return None
+    return parse_transaction_filename(tx_names[-1])

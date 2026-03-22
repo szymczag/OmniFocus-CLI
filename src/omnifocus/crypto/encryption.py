@@ -145,12 +145,15 @@ def load_document_keys(
             "HMAC verification failed — wrong passphrase or corrupted key data"
         ) from exc
 
-    return _parse_slots(slot_blob)
+    return {
+        slot_id: (aes_key, hmac_key)
+        for slot_id, _, aes_key, hmac_key in _parse_slot_records(slot_blob)
+    }
 
 
-def _parse_slots(blob: bytes) -> dict[int, tuple[bytes, bytes]]:
-    """Parse a decrypted slot blob into ``{slot_id: (aes_key, hmac_key)}``."""
-    slots: dict[int, tuple[bytes, bytes]] = {}
+def _parse_slot_records(blob: bytes) -> list[tuple[int, int, bytes, bytes]]:
+    """Parse a decrypted slot blob into ``(slot_id, slot_type, aes_key, hmac_key)`` records."""
+    slots: list[tuple[int, int, bytes, bytes]] = []
     i = 0
     while i < len(blob):
         slot_type = blob[i]
@@ -164,10 +167,65 @@ def _parse_slots(blob: bytes) -> dict[int, tuple[bytes, bytes]]:
 
         if slot_type in (_SLOT_ACTIVE_AES_CTR_HMAC, _SLOT_RETIRED_AES_CTR_HMAC):
             if len(slot_data) >= 32:
-                slots[slot_id] = (slot_data[:16], slot_data[16:32])
+                slots.append((slot_id, slot_type, slot_data[:16], slot_data[16:32]))
 
         i += 4 + data_len
     return slots
+
+
+def load_writable_document_key(
+    passphrase: str, encrypted_plist: bytes
+) -> tuple[int, bytes, bytes]:
+    """Return the active AES/HMAC key slot for outbound encryption.
+
+    Args:
+        passphrase: The OmniFocus database passphrase.
+        encrypted_plist: Raw bytes of the bundle ``encrypted`` plist.
+
+    Returns:
+        ``(slot_id, aes_key, hmac_key)`` for the active writable slot.
+
+    Raises:
+        OFEncryptionError: If no active AES-CTR/HMAC slot exists.
+    """
+    try:
+        data = plistlib.loads(encrypted_plist)
+    except Exception as exc:
+        raise OFEncryptionError(
+            f"Failed to parse 'encrypted' plist: {exc}"
+        ) from exc
+
+    if isinstance(data, list):
+        data = data[0]
+
+    salt = bytes(data["salt"])
+    rounds = int(data["rounds"])
+    prf_str = data.get("prf", "sha1")
+    if prf_str not in _PRF_MAP:
+        raise OFEncryptionError(
+            f"Unsupported PRF algorithm in 'encrypted' plist: {prf_str!r}"
+        )
+
+    kdf = PBKDF2HMAC(
+        algorithm=_PRF_MAP[prf_str](),
+        length=16,
+        salt=salt,
+        iterations=rounds,
+    )
+    wrapping_key = kdf.derive(passphrase.encode("utf-8"))
+
+    wrapped = bytes(data["key"])
+    try:
+        slot_blob = aes_key_unwrap(wrapping_key, wrapped)
+    except InvalidUnwrap as exc:
+        raise OFEncryptionError(
+            "HMAC verification failed — wrong passphrase or corrupted key data"
+        ) from exc
+
+    for slot_id, slot_type, aes_key, hmac_key in _parse_slot_records(slot_blob):
+        if slot_type == _SLOT_ACTIVE_AES_CTR_HMAC:
+            return slot_id, aes_key, hmac_key
+    raise OFEncryptionError("No active writable encryption key slot found in bundle")
 
 
 # ---------------------------------------------------------------------------

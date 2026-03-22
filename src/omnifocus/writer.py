@@ -33,7 +33,7 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Optional
 
-from omnifocus.models import Task
+from omnifocus.models import Project, Task
 
 # OmniFocus v2 XML namespace
 _NS = "http://www.omnigroup.com/namespace/OmniFocus/v2"
@@ -116,8 +116,24 @@ class TransactionBuilder:
         )
         return f"<{tag}>{escaped}</{tag}>"
 
-    def add_task(
+    def _project_container(
         self,
+        *,
+        folder_id: str | None,
+        status: str,
+        singleton: bool,
+    ) -> str:
+        """Render the nested ``<project>`` payload for project transactions."""
+        children: list[str] = []
+        if folder_id:
+            children.append(f'<folder idref="{folder_id}"/>')
+        children.append(self._leaf("status", status))
+        children.append(self._leaf("singleton", "true" if singleton else "false"))
+        return self._el("project", children)
+
+    def _task_element(
+        self,
+        *,
         task_id: str,
         name: str,
         parent_task_id: Optional[str],
@@ -126,39 +142,23 @@ class TransactionBuilder:
         rank: int,
         added_dt: datetime,
         modified_dt: datetime,
-        due_dt: Optional[datetime] = None,
-        start_dt: Optional[datetime] = None,
-        completed_dt: Optional[datetime] = None,
-        note: str = "",
-        order: str = "parallel",
-        estimated_minutes: Optional[int] = None,
-        repetition_rule: Optional[str] = None,
-        hidden_dt: Optional[datetime] = None,
-    ) -> None:
-        """Add a task element to the transaction.
-
-        Args:
-            task_id: The new task's unique identifier.
-            name: Display name.
-            parent_task_id: Parent task id, or ``None`` for top-level inbox tasks.
-            inbox: Whether this is an inbox task.
-            flagged: Whether the task is flagged.
-            rank: Sort key.
-            added_dt: UTC creation timestamp.
-            modified_dt: UTC modification timestamp.
-            due_dt: Optional local-time due datetime.
-            start_dt: Optional local-time defer datetime.
-            completed_dt: Optional UTC completion timestamp.
-            note: Plain-text note.
-            order: ``"sequential"`` or ``"parallel"``.
-            estimated_minutes: Optional duration estimate.
-            repetition_rule: RFC 5545 RRULE string, or ``None``.
-            hidden_dt: Optional UTC hidden/dropped timestamp.
-        """
-        children: list[str] = []
-        children.append("<project/>")
+        due_dt: Optional[datetime],
+        start_dt: Optional[datetime],
+        completed_dt: Optional[datetime],
+        note: str,
+        order: str,
+        estimated_minutes: Optional[int],
+        repetition_rule: Optional[str],
+        hidden_dt: Optional[datetime],
+        project_xml: str,
+        tag_ids: tuple[str, ...],
+    ) -> str:
+        """Render a complete task XML element."""
+        children: list[str] = [project_xml]
         if parent_task_id:
             children.append(f'<task idref="{parent_task_id}"/>')
+        for tag_id in tag_ids:
+            children.append(f'<context idref="{tag_id}"/>')
         children.append(self._leaf("inbox", "true" if inbox else "false"))
         children.append(self._leaf("added", _format_dt_utc(added_dt)))
         children.append(self._leaf("name", name))
@@ -185,9 +185,115 @@ class TransactionBuilder:
             children.append(self._leaf("repetition-rule", repetition_rule))
         children.append(self._leaf("order", order))
         children.append(self._leaf("modified", _format_dt_utc(modified_dt)))
+        return f'<task id="{task_id}">{"".join(children)}</task>'
 
+    def add_task(
+        self,
+        task_id: str,
+        name: str,
+        parent_task_id: Optional[str],
+        inbox: bool,
+        flagged: bool,
+        rank: int,
+        added_dt: datetime,
+        modified_dt: datetime,
+        due_dt: Optional[datetime] = None,
+        start_dt: Optional[datetime] = None,
+        completed_dt: Optional[datetime] = None,
+        note: str = "",
+        order: str = "parallel",
+        estimated_minutes: Optional[int] = None,
+        repetition_rule: Optional[str] = None,
+        hidden_dt: Optional[datetime] = None,
+        tag_ids: tuple[str, ...] = (),
+    ) -> None:
+        """Add a task element to the transaction.
+
+        Args:
+            task_id: The new task's unique identifier.
+            name: Display name.
+            parent_task_id: Parent task id, or ``None`` for top-level inbox tasks.
+            inbox: Whether this is an inbox task.
+            flagged: Whether the task is flagged.
+            rank: Sort key.
+            added_dt: UTC creation timestamp.
+            modified_dt: UTC modification timestamp.
+            due_dt: Optional local-time due datetime.
+            start_dt: Optional local-time defer datetime.
+            completed_dt: Optional UTC completion timestamp.
+            note: Plain-text note.
+            order: ``"sequential"`` or ``"parallel"``.
+            estimated_minutes: Optional duration estimate.
+            repetition_rule: RFC 5545 RRULE string, or ``None``.
+            hidden_dt: Optional UTC hidden/dropped timestamp.
+        """
         self._elements.append(
-            f'<task id="{task_id}">{"".join(children)}</task>'
+            self._task_element(
+                task_id=task_id,
+                name=name,
+                parent_task_id=parent_task_id,
+                inbox=inbox,
+                flagged=flagged,
+                rank=rank,
+                added_dt=added_dt,
+                modified_dt=modified_dt,
+                due_dt=due_dt,
+                start_dt=start_dt,
+                completed_dt=completed_dt,
+                note=note,
+                order=order,
+                estimated_minutes=estimated_minutes,
+                repetition_rule=repetition_rule,
+                hidden_dt=hidden_dt,
+                project_xml="<project/>",
+                tag_ids=tag_ids,
+            )
+        )
+
+    def add_project(
+        self,
+        project_id: str,
+        name: str,
+        *,
+        folder_id: Optional[str],
+        status: str,
+        singleton: bool,
+        flagged: bool,
+        rank: int,
+        added_dt: datetime,
+        modified_dt: datetime,
+        due_dt: Optional[datetime] = None,
+        start_dt: Optional[datetime] = None,
+        completed_dt: Optional[datetime] = None,
+        note: str = "",
+        tag_ids: tuple[str, ...] = (),
+    ) -> None:
+        """Add a project element to the transaction."""
+        self._elements.append(
+            self._task_element(
+                task_id=project_id,
+                name=name,
+                parent_task_id=None,
+                inbox=False,
+                flagged=flagged,
+                rank=rank,
+                added_dt=added_dt,
+                modified_dt=modified_dt,
+                due_dt=due_dt,
+                start_dt=start_dt,
+                completed_dt=completed_dt,
+                note=note,
+                order="parallel",
+                estimated_minutes=None,
+                repetition_rule=None,
+                hidden_dt=None,
+                project_xml=self._project_container(
+                    folder_id=folder_id,
+                    status=status,
+                    singleton=singleton,
+                ),
+                tag_ids=tag_ids,
+            )
         )
 
     def add_deletion(self, task_id: str, deleted_dt: datetime) -> None:
@@ -255,6 +361,7 @@ class TaskWriter:
         note: str = "",
         estimated_minutes: Optional[int] = None,
         task_id: Optional[str] = None,
+        rank: Optional[int] = None,
     ) -> tuple[str, bytes, str]:
         """Create a transaction ZIP that adds a new task.
 
@@ -275,7 +382,7 @@ class TaskWriter:
         """
         new_id = task_id or generate_id()
         now = _now_utc()
-        rank = int(now.timestamp() * 1000) & 0x7FFFFFFF  # monotonic-ish
+        task_rank = rank if rank is not None else int(now.timestamp() * 1000) & 0x7FFFFFFF
 
         builder = TransactionBuilder()
         builder.add_task(
@@ -284,7 +391,7 @@ class TaskWriter:
             parent_task_id=parent_task_id,
             inbox=inbox,
             flagged=flagged,
-            rank=rank,
+            rank=task_rank,
             added_dt=now,
             modified_dt=now,
             due_dt=due_dt,
@@ -294,6 +401,36 @@ class TaskWriter:
         )
         fname, data = self._build_zip(builder, now)
         return fname, data, new_id
+
+    def upsert_task(
+        self,
+        task: Task,
+        *,
+        when: datetime | None = None,
+    ) -> tuple[str, bytes]:
+        """Create a transaction ZIP that upserts an existing task."""
+        now = when or _now_utc()
+        builder = TransactionBuilder()
+        builder.add_task(
+            task_id=task.id,
+            name=task.name,
+            parent_task_id=task.parent_task_id,
+            inbox=task.inbox,
+            flagged=task.flagged,
+            rank=task.rank,
+            added_dt=task.added,
+            modified_dt=task.modified,
+            due_dt=task.due,
+            start_dt=task.start,
+            completed_dt=task.completed,
+            note=task.note,
+            order=task.order,
+            estimated_minutes=task.estimated_minutes,
+            repetition_rule=task.repetition_rule,
+            hidden_dt=task.hidden,
+            tag_ids=task.tag_ids,
+        )
+        return self._build_zip(builder, now)
 
     def complete_task(self, task: Task) -> tuple[str, bytes]:
         """Create a transaction ZIP that marks *task* as completed.
@@ -323,8 +460,93 @@ class TaskWriter:
             estimated_minutes=task.estimated_minutes,
             repetition_rule=task.repetition_rule,
             hidden_dt=task.hidden,
+            tag_ids=task.tag_ids,
         )
         return self._build_zip(builder, now)
+
+    def add_project(
+        self,
+        name: str,
+        *,
+        folder_id: str | None = None,
+        status: str = "active",
+        flagged: bool = False,
+        due_dt: Optional[datetime] = None,
+        start_dt: Optional[datetime] = None,
+        note: str = "",
+        project_id: Optional[str] = None,
+        singleton: bool = False,
+        rank: Optional[int] = None,
+    ) -> tuple[str, bytes, str]:
+        """Create a transaction ZIP that adds a new project."""
+        now = _now_utc()
+        new_id = project_id or generate_id()
+        project_rank = rank if rank is not None else int(now.timestamp() * 1000) & 0x7FFFFFFF
+        builder = TransactionBuilder()
+        builder.add_project(
+            project_id=new_id,
+            name=name,
+            folder_id=folder_id,
+            status=status,
+            singleton=singleton,
+            flagged=flagged,
+            rank=project_rank,
+            added_dt=now,
+            modified_dt=now,
+            due_dt=due_dt,
+            start_dt=start_dt,
+            note=note,
+        )
+        fname, data = self._build_zip(builder, now)
+        return fname, data, new_id
+
+    def upsert_project(
+        self,
+        project: Project,
+        *,
+        when: datetime | None = None,
+    ) -> tuple[str, bytes]:
+        """Create a transaction ZIP that upserts an existing project."""
+        now = when or _now_utc()
+        builder = TransactionBuilder()
+        builder.add_project(
+            project_id=project.id,
+            name=project.name,
+            folder_id=project.folder_id,
+            status=project.status,
+            singleton=project.singleton,
+            flagged=project.flagged,
+            rank=project.rank,
+            added_dt=project.added,
+            modified_dt=project.modified,
+            due_dt=project.due,
+            start_dt=project.start,
+            completed_dt=project.completed,
+            note=project.note,
+            tag_ids=project.tag_ids,
+        )
+        return self._build_zip(builder, now)
+
+    def complete_project(self, project: Project) -> tuple[str, bytes]:
+        """Create a transaction ZIP that marks a project as completed."""
+        now = _now_utc()
+        updated = Project(
+            id=project.id,
+            name=project.name,
+            folder_id=project.folder_id,
+            status="done",
+            singleton=project.singleton,
+            rank=project.rank,
+            added=project.added,
+            modified=now,
+            flagged=project.flagged,
+            due=project.due,
+            start=project.start,
+            note=project.note,
+            completed=now,
+            tag_ids=project.tag_ids,
+        )
+        return self.upsert_project(updated, when=now)
 
     # ------------------------------------------------------------------
     # Internal helpers
