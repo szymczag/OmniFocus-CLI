@@ -215,6 +215,16 @@ class TestEncryption:
             await store.load()
 
     @pytest.mark.asyncio
+    async def test_omni_file_encryption_magic_raises_not_implemented(
+        self, tmp_path: Path
+    ) -> None:
+        """OmniFileEncryption magic triggers a clear 'not implemented' error."""
+        fake_omni = b"OmniFileEncryption\x00" + b"\x00" * 200
+        store, _ = _make_store(tmp_path, baseline_bytes=fake_omni, passphrase="x")
+        with pytest.raises(OFEncryptionError, match="OmniFileEncryption"):
+            await store.load()
+
+    @pytest.mark.asyncio
     async def test_unencrypted_data_passes_through(self, tmp_path: Path) -> None:
         store, _ = _make_store(tmp_path, passphrase=None)
         model = await store.load()

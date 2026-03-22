@@ -195,8 +195,8 @@ class OFocusStore:
         """Decrypt *data* if it looks encrypted and a passphrase is configured."""
         log.debug(
             "File header (hex): %s  ascii: %r",
-            data[:16].hex(),
-            data[:16],
+            data[:32].hex(),
+            data[:32],
         )
         if is_encrypted(data):
             if self._passphrase is None:
@@ -206,8 +206,16 @@ class OFocusStore:
                     "Set OF_ENCRYPTION_PASSPHRASE (or use the WebDAV password "
                     "as a linked passphrase via OF_WEBDAV_PASS / URL-embedded credentials)."
                 )
-            log.debug("Decrypting %d-byte file", len(data))
+            log.debug("Decrypting %d-byte file (first 256 bytes: %s)", len(data), data[:256].hex())
             return decrypt(data, self._passphrase)
+        # OmniFileEncryption format — detected but not yet parsed
+        if data[:18] == b"OmniFileEncryption":
+            log.debug("OmniFileEncryption header (first 256 bytes): %s", data[:256].hex())
+            from omnifocus.errors import OFEncryptionError
+            raise OFEncryptionError(
+                "OmniFileEncryption format detected but not yet implemented. "
+                f"Header: {data[:256].hex()}"
+            )
         log.debug("File does not match known encryption magic — treating as plaintext")
         return data
 
