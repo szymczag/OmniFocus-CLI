@@ -32,9 +32,17 @@ ENV/
 htmlcov/
 .pytest_cache/
 .tox/
+.nox/
+.hypothesis/
 
 # Type checking
 .mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Notebook / local caches
+.ipynb_checkpoints/
 
 # Editor
 .idea/
@@ -47,6 +55,12 @@ htmlcov/
 .DS_Store
 .AppleDouble
 .LSOverride
+
+# Local AI / agent tooling
+.claude/
+.codex/
+.cursor/
+.aider*
 
 # Container
 *.tar
