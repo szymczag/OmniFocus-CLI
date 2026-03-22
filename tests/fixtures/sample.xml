@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2"
+           app-id="com.omnigroup.OmniFocus4"
+           app-version="185.9.1"
+           os-name="macOS">
+
+  <!-- Folders -->
+  <folder id="folder1">
+    <added>2024-01-01T10:00:00.000Z</added>
+    <name>Work</name>
+    <rank>100</rank>
+    <modified>2024-01-01T10:00:00.000Z</modified>
+  </folder>
+
+  <folder id="folder2">
+    <folder idref="folder1"/>
+    <added>2024-01-02T10:00:00.000Z</added>
+    <name>Engineering</name>
+    <rank>200</rank>
+    <modified>2024-01-02T10:00:00.000Z</modified>
+  </folder>
+
+  <!-- Contexts / Tags -->
+  <context id="tag1">
+    <added>2024-01-01T10:00:00.000Z</added>
+    <name>@home</name>
+    <rank>10</rank>
+    <modified>2024-01-01T10:00:00.000Z</modified>
+  </context>
+
+  <context id="tag2">
+    <context idref="tag1"/>
+    <added>2024-01-01T10:00:00.000Z</added>
+    <name>@desk</name>
+    <rank>20</rank>
+    <modified>2024-01-01T10:00:00.000Z</modified>
+  </context>
+
+  <!-- Project task (has a <project> child with children) -->
+  <task id="proj1">
+    <project>
+      <folder idref="folder1"/>
+      <status>active</status>
+      <singleton>false</singleton>
+    </project>
+    <inbox>false</inbox>
+    <added>2024-02-01T08:00:00.000Z</added>
+    <name>🚀 Launch MVP</name>
+    <note>First milestone</note>
+    <rank>1000</rank>
+    <flagged>true</flagged>
+    <due>2026-06-01T19:00:00.000</due>
+    <start>2026-05-01T09:00:00.000</start>
+    <completed/>
+    <order>sequential</order>
+    <modified>2025-01-01T12:00:00.000Z</modified>
+  </task>
+
+  <!-- Singleton project (no folder) -->
+  <task id="proj2">
+    <project>
+      <status>inactive</status>
+      <singleton>true</singleton>
+    </project>
+    <inbox>false</inbox>
+    <added>2024-03-01T08:00:00.000Z</added>
+    <name>Someday Maybe</name>
+    <note/>
+    <rank>2000</rank>
+    <flagged>false</flagged>
+    <completed/>
+    <order>parallel</order>
+    <modified>2024-03-01T08:00:00.000Z</modified>
+  </task>
+
+  <!-- Completed project -->
+  <task id="proj3">
+    <project>
+      <status>done</status>
+      <singleton>false</singleton>
+    </project>
+    <inbox>false</inbox>
+    <added>2023-01-01T08:00:00.000Z</added>
+    <name>Old Project</name>
+    <note/>
+    <rank>3000</rank>
+    <flagged>false</flagged>
+    <completed>2024-12-31T23:59:00.000Z</completed>
+    <order>parallel</order>
+    <modified>2024-12-31T23:59:00.000Z</modified>
+  </task>
+
+  <!-- Regular tasks under proj1 -->
+  <task id="task1">
+    <project/>
+    <task idref="proj1"/>
+    <inbox>false</inbox>
+    <added>2024-02-01T09:00:00.000Z</added>
+    <name>Write tests</name>
+    <note>Use pytest</note>
+    <rank>100</rank>
+    <flagged>false</flagged>
+    <due>2026-04-01T17:00:00.000</due>
+    <start/>
+    <completed/>
+    <estimated-minutes>120</estimated-minutes>
+    <repetition-rule>FREQ=WEEKLY;INTERVAL=1</repetition-rule>
+    <order>parallel</order>
+    <context idref="tag1"/>
+    <modified>2025-06-01T10:00:00.000Z</modified>
+  </task>
+
+  <task id="task2">
+    <project/>
+    <task idref="proj1"/>
+    <inbox>false</inbox>
+    <added>2024-02-01T09:30:00.000Z</added>
+    <name>Deploy to staging</name>
+    <note/>
+    <rank>200</rank>
+    <flagged>true</flagged>
+    <due/>
+    <start/>
+    <completed>2026-03-01T14:00:00.000Z</completed>
+    <order>parallel</order>
+    <modified>2026-03-01T14:00:00.000Z</modified>
+  </task>
+
+  <!-- Subtask of task1 (nested) -->
+  <task id="task3">
+    <project/>
+    <task idref="task1"/>
+    <inbox>false</inbox>
+    <added>2024-02-02T10:00:00.000Z</added>
+    <name>Write unit tests</name>
+    <note/>
+    <rank>10</rank>
+    <flagged>false</flagged>
+    <completed/>
+    <order>parallel</order>
+    <modified>2024-02-02T10:00:00.000Z</modified>
+  </task>
+
+  <!-- Hidden (dropped) task -->
+  <task id="task4">
+    <project/>
+    <task idref="proj1"/>
+    <inbox>false</inbox>
+    <added>2024-02-03T10:00:00.000Z</added>
+    <name>Dropped task</name>
+    <note/>
+    <rank>300</rank>
+    <flagged>false</flagged>
+    <hidden>2025-01-15T08:00:00.000Z</hidden>
+    <completed/>
+    <order>parallel</order>
+    <modified>2025-01-15T08:00:00.000Z</modified>
+  </task>
+
+  <!-- Inbox task (no parent task or project) -->
+  <task id="inbox1">
+    <project/>
+    <inbox>true</inbox>
+    <added>2026-03-20T08:00:00.000Z</added>
+    <name>Buy milk 🥛</name>
+    <note/>
+    <rank>50</rank>
+    <flagged>false</flagged>
+    <completed/>
+    <order>parallel</order>
+    <modified>2026-03-20T08:00:00.000Z</modified>
+  </task>
+
+</omnifocus>
