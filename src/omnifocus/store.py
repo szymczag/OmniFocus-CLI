@@ -193,6 +193,11 @@ class OFocusStore:
 
     def _maybe_decrypt(self, data: bytes) -> bytes:
         """Decrypt *data* if it looks encrypted and a passphrase is configured."""
+        log.debug(
+            "File header (hex): %s  ascii: %r",
+            data[:16].hex(),
+            data[:16],
+        )
         if is_encrypted(data):
             if self._passphrase is None:
                 from omnifocus.errors import OFEncryptionError
@@ -203,6 +208,7 @@ class OFocusStore:
                 )
             log.debug("Decrypting %d-byte file", len(data))
             return decrypt(data, self._passphrase)
+        log.debug("File does not match known encryption magic — treating as plaintext")
         return data
 
     def _load_from_cache(self) -> OFModel | None:
