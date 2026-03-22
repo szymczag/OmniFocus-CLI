@@ -10,17 +10,15 @@ and exposes task management as a **Claude MCP server**.
 
 ```bash
 # Build
-podman build --target test -t omnifocus-cli-test .
-podman run --rm omnifocus-cli-test
-
 podman build --target runtime -t omnifocus-cli .
 
-# Use CLI
+# Sync and list tasks (credentials embedded in URL)
 podman run --rm \
-  -e OF_WEBDAV_URL=https://dav.example.com/omnifocus/OmniFocus.ofocus/ \
-  -e OF_WEBDAV_USER=user \
-  -e OF_WEBDAV_PASS=pass \
-  -e OF_ENCRYPTION_PASSPHRASE=secret \
+  -e OF_WEBDAV_URL=https://user:pass@dav.example.com/OmniFocus.ofocus/ \
+  omnifocus-cli of --debug sync
+
+podman run --rm \
+  -e OF_WEBDAV_URL=https://user:pass@dav.example.com/OmniFocus.ofocus/ \
   omnifocus-cli of tasks --inbox
 ```
 
@@ -28,21 +26,23 @@ podman run --rm \
 
 | Variable | Required | Description |
 |---|---|---|
-| `OF_WEBDAV_URL` | Yes | WebDAV bundle URL (must end with `/`) |
-| `OF_WEBDAV_USER` | Yes | WebDAV username |
-| `OF_WEBDAV_PASS` | Yes | WebDAV password |
-| `OF_ENCRYPTION_PASSPHRASE` | If encrypted | Database passphrase |
+| `OF_WEBDAV_URL` | Yes | WebDAV bundle URL — credentials may be embedded: `https://user:pass@host/path/` |
+| `OF_WEBDAV_USER` | No | WebDAV username (overrides URL-embedded user) |
+| `OF_WEBDAV_PASS` | No | WebDAV password (overrides URL-embedded password) |
+| `OF_ENCRYPTION_PASSPHRASE` | No | Decryption passphrase — defaults to WebDAV password (linked-password mode) |
 | `OF_CACHE_DIR` | No | Cache directory (default `/tmp/of-cache`) |
 
 ## Commands
 
 ```
-of sync                         Pull latest bundle from WebDAV
-of tasks [--inbox] [--today] [--flagged] [--due] [--project NAME]
-of add NAME [--project NAME] [--due DATE] [--flagged] [--note TEXT]
-of done QUERY [-y]
-of projects [--status active|all] [--format tree|json]
+of [--debug] sync                   Pull latest bundle from WebDAV
+of [--debug] tasks [--inbox] [--today] [--flagged] [--due] [--project NAME]
+of [--debug] add NAME [--project NAME] [--due DATE] [--flagged] [--note TEXT]
+of [--debug] done QUERY [-y]
+of [--debug] projects [--status active|all] [--format tree|json]
 ```
+
+`--debug` prints verbose logs to stderr (WebDAV requests, decryption, parsing).
 
 ## MCP server (Claude integration)
 
@@ -55,11 +55,11 @@ Add to `~/.claude/settings.json`:
       "command": "podman",
       "args": ["run", "--rm", "-i",
                "-e", "OF_WEBDAV_URL",
-               "-e", "OF_WEBDAV_USER",
-               "-e", "OF_WEBDAV_PASS",
-               "-e", "OF_ENCRYPTION_PASSPHRASE",
                "omnifocus-cli:latest"]
     }
   }
 }
 ```
+
+The default container command is `of-mcp` (MCP server mode).
+Pass `OF_WEBDAV_URL=https://user:pass@host/path/` to avoid separate user/pass vars.

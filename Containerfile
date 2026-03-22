@@ -58,10 +58,10 @@ ENV OF_CACHE_DIR=/tmp/of-cache \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Default: MCP server mode (stdio transport for Claude integration)
-ENTRYPOINT ["of-mcp"]
-
-# CLI override example: podman run ... omnifocus-cli of tasks --inbox
+# Default: MCP server mode (stdio transport for Claude integration).
+# Using CMD (not ENTRYPOINT) so the CLI can be invoked by passing a
+# different command: podman run --rm omnifocus-cli of tasks --inbox
+CMD ["of-mcp"]
 
 # ---------------------------------------------------------------------------
 # Test stage — includes dev dependencies and test suite
