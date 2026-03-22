@@ -24,7 +24,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
 
-from omnifocus.models import Folder, OFModel, Project, Task
+from omnifocus.models import Folder, Project, Task
 
 _DEFAULT_CONSOLE = Console()
 
@@ -49,10 +49,10 @@ def render_tasks_table(
     """
     out = console or _DEFAULT_CONSOLE
     table = Table(box=box.SIMPLE_HEAD, show_header=True, expand=False)
-    table.add_column("ID", style="dim", width=12, no_wrap=True)
+    table.add_column("ID", style="dim", min_width=11, no_wrap=True)
     table.add_column("Name", min_width=30)
     table.add_column("Project", style="cyan", width=24, no_wrap=True)
-    table.add_column("Due", style="red", width=8, no_wrap=True)
+    table.add_column("Due", style="red", min_width=5, no_wrap=True)
     table.add_column("F", width=2, no_wrap=True)
 
     for task in sorted(tasks, key=lambda t: (t.due or datetime.max, t.rank)):

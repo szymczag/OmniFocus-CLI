@@ -306,6 +306,99 @@ _TX_ADD_XML = """\
 </omnifocus>
 """
 
+_TX_SECOND_UPDATE_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="t1">
+    <project/>
+    <inbox>true</inbox>
+    <added>2026-01-01T00:00:00.000Z</added>
+    <name>Updated name again</name>
+    <rank>5</rank>
+    <flagged>false</flagged>
+    <completed/>
+    <modified>2026-01-03T00:00:00.000Z</modified>
+  </task>
+</omnifocus>
+"""
+
+_TX_READD_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="t2">
+    <project/>
+    <inbox>true</inbox>
+    <added>2026-01-04T00:00:00.000Z</added>
+    <name>Restored task</name>
+    <rank>2</rank>
+    <flagged>false</flagged>
+    <completed/>
+    <modified>2026-01-04T00:00:00.000Z</modified>
+  </task>
+</omnifocus>
+"""
+
+_TASK_TO_PROJECT_BASE_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="shape1">
+    <project/>
+    <inbox>true</inbox>
+    <added>2026-01-01T00:00:00.000Z</added>
+    <name>Shape shifter</name>
+    <rank>1</rank>
+    <flagged>false</flagged>
+    <completed/>
+    <modified>2026-01-01T00:00:00.000Z</modified>
+  </task>
+</omnifocus>
+"""
+
+_TASK_TO_PROJECT_TX_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="shape1">
+    <name>Shape shifter</name>
+    <rank>1</rank>
+    <flagged>false</flagged>
+    <added>2026-01-01T00:00:00.000Z</added>
+    <modified>2026-01-02T00:00:00.000Z</modified>
+    <project>
+      <status>active</status>
+      <singleton>false</singleton>
+    </project>
+  </task>
+</omnifocus>
+"""
+
+_REPEATED_NAME_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <task id="weekly-review-1">
+    <project/>
+    <inbox>true</inbox>
+    <added>2026-03-01T00:00:00.000Z</added>
+    <name>Weekly Review</name>
+    <rank>1</rank>
+    <flagged>false</flagged>
+    <due>2026-03-22T19:00:00.000</due>
+    <completed/>
+    <modified>2026-03-01T00:00:00.000Z</modified>
+  </task>
+  <task id="weekly-review-2">
+    <project/>
+    <inbox>true</inbox>
+    <added>2026-03-02T00:00:00.000Z</added>
+    <name>Weekly Review</name>
+    <rank>2</rank>
+    <flagged>false</flagged>
+    <due>2026-04-05T19:00:00.000</due>
+    <completed/>
+    <modified>2026-03-02T00:00:00.000Z</modified>
+  </task>
+</omnifocus>
+"""
+
 
 class TestTransactionMerge:
     def test_update_overwrites_task(self) -> None:
@@ -335,6 +428,38 @@ class TestTransactionMerge:
         assert model.tasks["t1"].name == "Updated name"
         assert "t2" not in model.tasks
         assert "t3" in model.tasks
+
+    def test_multiple_upserts_keep_latest_by_id(self) -> None:
+        base = make_zip(_BASE_XML)
+        txs = [make_zip(_TX_UPDATE_XML), make_zip(_TX_SECOND_UPDATE_XML)]
+        model = build_model(base, txs)
+        assert len(model.tasks) == 2
+        assert model.tasks["t1"].name == "Updated name again"
+        assert model.tasks["t1"].rank == 5
+
+    def test_delete_followed_by_readd_restores_single_task(self) -> None:
+        base = make_zip(_BASE_XML)
+        txs = [make_zip(_TX_DELETE_XML), make_zip(_TX_READD_XML)]
+        model = build_model(base, txs)
+        assert model.tasks["t2"].name == "Restored task"
+        assert list(model.tasks).count("t2") == 1
+
+    def test_task_can_change_shape_into_project(self) -> None:
+        base = make_zip(_TASK_TO_PROJECT_BASE_XML)
+        tx = make_zip(_TASK_TO_PROJECT_TX_XML)
+        model = build_model(base, [tx])
+        assert "shape1" not in model.tasks
+        assert model.projects["shape1"].name == "Shape shifter"
+        assert model.projects["shape1"].status == "active"
+
+    def test_repeated_names_remain_distinct_by_id(self) -> None:
+        model = build_model(make_zip(_REPEATED_NAME_XML))
+        weekly_reviews = [task for task in model.tasks.values() if task.name == "Weekly Review"]
+        assert len(weekly_reviews) == 2
+        assert {task.id for task in weekly_reviews} == {
+            "weekly-review-1",
+            "weekly-review-2",
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -79,6 +79,7 @@ def _mock_store(model: OFModel | None = None) -> MagicMock:
         "last_synced": "2026-03-22T12:00:00+00:00",
         "cached": True,
         "cache_age_seconds": 5.0,
+        "cache_valid": True,
     })
     return m
 
@@ -195,6 +196,21 @@ class TestHandleListTasks:
             result = await _handle_list_tasks({"limit": 1})
         data = _parse_response(result)
         assert len(data) == 1
+
+    @pytest.mark.asyncio
+    async def test_repeated_names_remain_distinct_by_id(self) -> None:
+        model = _make_model()
+        model.tasks["dup"] = dataclasses.replace(
+            model.tasks["t1"],
+            id="dup",
+            name="Write tests",
+            due=datetime(2026, 4, 2, 19, 0, 0),
+        )
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            result = await _handle_list_tasks({})
+        data = _parse_response(result)
+        repeated = [task for task in data if task["name"] == "Write tests"]
+        assert {task["id"] for task in repeated} == {"t1", "dup"}
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +484,7 @@ class TestHandleSyncStatus:
             result = await _handle_sync_status({})
         data = _parse_response(result)
         assert "cached" in data
+        assert data["cache_valid"] is True
 
 
 # ---------------------------------------------------------------------------

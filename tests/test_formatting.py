@@ -136,6 +136,17 @@ class TestRenderTasksTable:
         render_tasks_table(tasks, {}, console=con)
         assert "06-15" in buf.getvalue()
 
+    def test_shows_full_distinct_ids_for_same_name_tasks(self) -> None:
+        con, buf = _console()
+        tasks = [
+            _task("weekly-review-1", "Weekly Review"),
+            _task("weekly-review-2", "Weekly Review"),
+        ]
+        render_tasks_table(tasks, {}, console=con)
+        output = buf.getvalue()
+        assert "weekly-review-1" in output
+        assert "weekly-review-2" in output
+
     def test_empty_task_list(self) -> None:
         con, buf = _console()
         render_tasks_table([], {}, console=con)
@@ -174,6 +185,20 @@ class TestRenderTasksJson:
         con, buf = _console()
         render_tasks_json([], console=con)
         assert json.loads(buf.getvalue()) == []
+
+    def test_repeated_names_keep_exact_ids_and_due_values(self) -> None:
+        con, buf = _console()
+        tasks = [
+            _task("weekly-review-1", "Weekly Review", due=datetime(2026, 3, 22, 19, 0, 0)),
+            _task("weekly-review-2", "Weekly Review", due=datetime(2026, 4, 5, 19, 0, 0)),
+        ]
+        render_tasks_json(tasks, console=con)
+        data = json.loads(buf.getvalue())
+        assert [task["id"] for task in data] == ["weekly-review-1", "weekly-review-2"]
+        assert [task["due"] for task in data] == [
+            "2026-03-22T19:00:00",
+            "2026-04-05T19:00:00",
+        ]
 
 
 # ---------------------------------------------------------------------------
