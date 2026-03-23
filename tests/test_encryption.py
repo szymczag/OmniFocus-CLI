@@ -20,14 +20,15 @@ from omnifocus.crypto.encryption import (
     _parse_slots,
     create_encrypted_bundle,
     decrypt,
-    encrypt,
     decrypt_file,
+    encrypt,
     encrypt_file,
     load_document_keys,
+    load_writable_document_key,
 )
 from omnifocus.errors import OFEncryptionError
 
-PASSPHRASE = "correct-horse-battery-staple"
+PASSPHRASE = "correct-horse-battery-staple"  # noqa: S105
 PLAINTEXT = b"PK\x03\x04 fake zip content for testing purposes only"
 
 
@@ -222,7 +223,7 @@ class TestDecryptErrors:
         enc = encrypt_file(PLAINTEXT, aes_key, hmac_key)
         # Chop the file so there is exactly one byte after the header
         header_end = 32
-        truncated = enc[:header_end + 1] + enc[-_FILE_HMAC_LEN:]
+        truncated = enc[: header_end + 1] + enc[-_FILE_HMAC_LEN:]
         with pytest.raises(OFEncryptionError):
             decrypt_file(truncated, aes_key, hmac_key)
 
@@ -287,6 +288,69 @@ class TestLoadDocumentKeysErrors:
         keys = load_document_keys(PASSPHRASE, list_plist)
         aes_key, hmac_key = next(iter(keys.values()))
         assert decrypt_file(enc, aes_key, hmac_key) == PLAINTEXT
+
+
+class TestLoadWritableDocumentKey:
+    def test_returns_active_slot(self) -> None:
+        plist, _ = create_encrypted_bundle(PLAINTEXT, PASSPHRASE, slot_id=3)
+        slot_id, aes_key, hmac_key = load_writable_document_key(PASSPHRASE, plist)
+        assert slot_id == 3
+        assert len(aes_key) == 16
+        assert len(hmac_key) == 16
+
+    def test_invalid_plist_raises(self) -> None:
+        with pytest.raises(OFEncryptionError, match="Failed to parse 'encrypted' plist"):
+            load_writable_document_key(PASSPHRASE, b"not a plist")
+
+    def test_unsupported_prf_raises(self) -> None:
+        plist, _ = create_encrypted_bundle(PLAINTEXT, PASSPHRASE)
+        data = plistlib.loads(plist)
+        data["prf"] = "md5"
+        bad_plist = plistlib.dumps(data)
+        with pytest.raises(OFEncryptionError, match="Unsupported PRF"):
+            load_writable_document_key(PASSPHRASE, bad_plist)
+
+    def test_wrong_passphrase_raises(self) -> None:
+        plist, _ = create_encrypted_bundle(PLAINTEXT, PASSPHRASE)
+        with pytest.raises(OFEncryptionError, match="HMAC verification failed"):
+            load_writable_document_key("wrong-passphrase", plist)
+
+    def test_list_plist_format(self) -> None:
+        plist, _ = create_encrypted_bundle(PLAINTEXT, PASSPHRASE)
+        data = plistlib.loads(plist)
+        list_plist = plistlib.dumps([data])
+        slot_id, _, _ = load_writable_document_key(PASSPHRASE, list_plist)
+        assert slot_id >= 1
+
+    def test_no_active_slot_raises(self) -> None:
+        blob = bytes([4, 8]) + b"\x00\x01" + b"A" * 16 + b"B" * 16 + b"\x00" * 4
+        salt = b"S" * 32
+        rounds = 100_000
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.hazmat.primitives.keywrap import aes_key_wrap
+
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=16,
+            salt=salt,
+            iterations=rounds,
+        )
+        wrapping_key = kdf.derive(PASSPHRASE.encode("utf-8"))
+        wrapped = aes_key_wrap(wrapping_key, blob)
+        plist = plistlib.dumps(
+            {
+                "method": "password",
+                "algorithm": "PBKDF2; aes128-wrap",
+                "rounds": rounds,
+                "salt": salt,
+                "prf": "sha256",
+                "key": wrapped,
+            }
+        )
+
+        with pytest.raises(OFEncryptionError, match="No active writable encryption key slot"):
+            load_writable_document_key(PASSPHRASE, plist)
 
 
 # ---------------------------------------------------------------------------

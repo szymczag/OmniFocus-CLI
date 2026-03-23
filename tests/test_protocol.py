@@ -5,7 +5,14 @@ from __future__ import annotations
 import pytest
 
 from omnifocus.errors import OFBundleNotFound
-from omnifocus.sync.protocol import classify_bundle_files, client_id_from_filename, is_baseline
+from omnifocus.sync.protocol import (
+    classify_bundle_files,
+    client_id_from_filename,
+    is_baseline,
+    latest_transaction_ref,
+    parent_id_from_filename,
+    parse_transaction_filename,
+)
 
 
 class TestClassifyBundleFiles:
@@ -17,10 +24,12 @@ class TestClassifyBundleFiles:
         ]
         baseline, txs = classify_bundle_files(files)
         assert baseline == "00000000000000=abc+xyz.zip"
-        assert txs == sorted([
-            "20260322T154011=xyz+abc.zip",
-            "20260101T000000=aaa+bbb.zip",
-        ])
+        assert txs == sorted(
+            [
+                "20260322T154011=xyz+abc.zip",
+                "20260101T000000=aaa+bbb.zip",
+            ]
+        )
 
     def test_transactions_sorted_lexicographically(self) -> None:
         files = [
@@ -79,3 +88,30 @@ class TestClientIdFromFilename:
 
     def test_empty_after_eq_returns_none(self) -> None:
         assert client_id_from_filename("00000000000000=.zip") is None
+
+
+class TestParentIdAndTransactionRefs:
+    def test_parent_id_from_filename(self) -> None:
+        pid = parent_id_from_filename("20260322T154011=clientABC+parentXYZ.zip")
+        assert pid == "parentXYZ"
+
+    def test_parent_id_without_plus_returns_none(self) -> None:
+        assert parent_id_from_filename("20260322T154011=clientABC.zip") is None
+
+    def test_parse_transaction_filename_returns_none_for_malformed_name(self) -> None:
+        assert parse_transaction_filename("bad.zip") is None
+
+    def test_latest_transaction_ref_returns_none_when_only_baseline(self) -> None:
+        assert latest_transaction_ref(["00000000000000=base.zip"]) is None
+
+    def test_latest_transaction_ref_returns_latest_transaction(self) -> None:
+        ref = latest_transaction_ref(
+            [
+                "00000000000000=base.zip",
+                "20260322T154011=aaa+bbb.zip",
+                "20260323T154011=ccc+ddd.zip",
+            ]
+        )
+        assert ref is not None
+        assert ref.client_id == "ccc"
+        assert ref.parent_id == "ddd"

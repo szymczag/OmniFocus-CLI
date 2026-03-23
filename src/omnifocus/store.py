@@ -54,16 +54,13 @@ import logging
 import os
 import pickle
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-log = logging.getLogger(__name__)
-
 from omnifocus.crypto.discovery import is_encrypted
-from omnifocus.errors import OFEncryptionError, OFError, OFProjectNotFound, OFTaskNotFound
-from omnifocus.fuzzy import find_tasks
+from omnifocus.errors import OFEncryptionError, OFError
 from omnifocus.models import OFModel, Project, Task
 from omnifocus.parser import build_model
 from omnifocus.sync.protocol import (
@@ -72,6 +69,8 @@ from omnifocus.sync.protocol import (
 )
 from omnifocus.sync.webdav import WebDAVClient
 from omnifocus.writer import TaskWriter, generate_id
+
+log = logging.getLogger(__name__)
 
 _CACHE_FILENAME = "of_model.pkl"
 _WRITER_STATE_FILENAME = "writer_state.json"
@@ -116,7 +115,7 @@ class OFocusStore:
         self._client = client
         self._passphrase = passphrase
         self._cache_dir = cache_dir or Path(
-            os.environ.get("OF_CACHE_DIR", "/tmp/of-cache")
+            os.environ.get("OF_CACHE_DIR", "/tmp/of-cache")  # noqa: S108
         )
         self._cache_path = self._cache_dir / _CACHE_FILENAME
         self._writer_state_path = self._cache_dir / _WRITER_STATE_FILENAME
@@ -205,19 +204,12 @@ class OFocusStore:
             cached = True
             age = time.time() - self._cache_path.stat().st_mtime
             cache_age = round(age, 1)
-            ts = datetime.fromtimestamp(
-                self._cache_path.stat().st_mtime, tz=timezone.utc
-            )
+            ts = datetime.fromtimestamp(self._cache_path.stat().st_mtime, tz=UTC)
             last_synced = ts.isoformat()
             cached_payload = self._load_from_cache()
-            if (
-                cached_payload is not None
-                and cached_payload.bundle_fingerprint is not None
-            ):
+            if cached_payload is not None and cached_payload.bundle_fingerprint is not None:
                 filenames = await self._client.list_bundle()
-                cache_valid = (
-                    cached_payload.bundle_fingerprint == _bundle_fingerprint(filenames)
-                )
+                cache_valid = cached_payload.bundle_fingerprint == _bundle_fingerprint(filenames)
 
         return {
             "last_synced": last_synced,
@@ -382,11 +374,11 @@ class OFocusStore:
         model = build_model(baseline_bytes, tx_bytes_list)
         log.debug(
             "Parsed: %d tasks, %d projects, %d folders",
-            len(model.tasks), len(model.projects), len(model.folders),
+            len(model.tasks),
+            len(model.projects),
+            len(model.folders),
         )
-        self._save_to_cache(
-            _CachePayload(model=model, bundle_fingerprint=bundle_fingerprint)
-        )
+        self._save_to_cache(_CachePayload(model=model, bundle_fingerprint=bundle_fingerprint))
         return model
 
     async def _prepare_writer(
@@ -478,6 +470,7 @@ class OFocusStore:
         plist_bytes = await self._client.get_file("encrypted")
 
         from omnifocus.crypto.encryption import load_document_keys
+
         keys = load_document_keys(self._passphrase, plist_bytes)
         log.debug("Loaded %d key slot(s) from 'encrypted' plist", len(keys))
         return keys
@@ -505,9 +498,7 @@ class OFocusStore:
         log.debug("Decrypting %d-byte file using key slot %d", len(data), key_id)
         return decrypt_file(data, *doc_keys[key_id])
 
-    def _load_writable_key_slot(
-        self, encrypted_plist: bytes
-    ) -> tuple[int, bytes, bytes]:
+    def _load_writable_key_slot(self, encrypted_plist: bytes) -> tuple[int, bytes, bytes]:
         """Return the active writable key slot for outbound encryption."""
         if self._passphrase is None:
             raise OFEncryptionError(

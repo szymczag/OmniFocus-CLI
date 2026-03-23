@@ -66,10 +66,10 @@ from omnifocus.errors import OFEncryptionError
 
 # ---- Segment / file constants --------------------------------------------
 
-_SEGMENT_SIZE = 65536       # bytes of plaintext / ciphertext per segment
-_SEG_IV_LEN = 12            # bytes
-_SEG_MAC_LEN = 20           # truncated HMAC-SHA256 bytes per segment
-_FILE_HMAC_LEN = 32         # bytes at end of file
+_SEGMENT_SIZE = 65536  # bytes of plaintext / ciphertext per segment
+_SEG_IV_LEN = 12  # bytes
+_SEG_MAC_LEN = 20  # truncated HMAC-SHA256 bytes per segment
+_FILE_HMAC_LEN = 32  # bytes at end of file
 
 # ---- Key-slot type IDs ---------------------------------------------------
 
@@ -79,7 +79,7 @@ _SLOT_RETIRED_AES_CTR_HMAC = 4
 # ---- PBKDF2 PRF map ------------------------------------------------------
 
 _PRF_MAP: dict[str, type] = {
-    "sha1":   hashes.SHA1,
+    "sha1": hashes.SHA1,
     "sha256": hashes.SHA256,
     "sha512": hashes.SHA512,
 }
@@ -94,9 +94,7 @@ _TEST_PBKDF2_PRF = "sha256"
 # ---------------------------------------------------------------------------
 
 
-def load_document_keys(
-    passphrase: str, encrypted_plist: bytes
-) -> dict[int, tuple[bytes, bytes]]:
+def load_document_keys(passphrase: str, encrypted_plist: bytes) -> dict[int, tuple[bytes, bytes]]:
     """Derive per-slot AES and HMAC keys from the bundle ``encrypted`` plist.
 
     Args:
@@ -114,9 +112,7 @@ def load_document_keys(
     try:
         data = plistlib.loads(encrypted_plist)
     except Exception as exc:
-        raise OFEncryptionError(
-            f"Failed to parse 'encrypted' plist: {exc}"
-        ) from exc
+        raise OFEncryptionError(f"Failed to parse 'encrypted' plist: {exc}") from exc
 
     if isinstance(data, list):
         data = data[0]
@@ -125,9 +121,7 @@ def load_document_keys(
     rounds = int(data["rounds"])
     prf_str = data.get("prf", "sha1")
     if prf_str not in _PRF_MAP:
-        raise OFEncryptionError(
-            f"Unsupported PRF algorithm in 'encrypted' plist: {prf_str!r}"
-        )
+        raise OFEncryptionError(f"Unsupported PRF algorithm in 'encrypted' plist: {prf_str!r}")
 
     kdf = PBKDF2HMAC(
         algorithm=_PRF_MAP[prf_str](),
@@ -162,8 +156,8 @@ def _parse_slot_records(blob: bytes) -> list[tuple[int, int, bytes, bytes]]:
         if i + 4 > len(blob):
             break
         data_len = blob[i + 1] * 4
-        slot_id = struct.unpack(">H", blob[i + 2: i + 4])[0]
-        slot_data = blob[i + 4: i + 4 + data_len]
+        slot_id = struct.unpack(">H", blob[i + 2 : i + 4])[0]
+        slot_data = blob[i + 4 : i + 4 + data_len]
 
         if slot_type in (_SLOT_ACTIVE_AES_CTR_HMAC, _SLOT_RETIRED_AES_CTR_HMAC):
             if len(slot_data) >= 32:
@@ -173,9 +167,14 @@ def _parse_slot_records(blob: bytes) -> list[tuple[int, int, bytes, bytes]]:
     return slots
 
 
-def load_writable_document_key(
-    passphrase: str, encrypted_plist: bytes
-) -> tuple[int, bytes, bytes]:
+def _parse_slots(blob: bytes) -> dict[int, tuple[bytes, bytes]]:
+    """Backward-compatible wrapper returning ``{slot_id: (aes_key, hmac_key)}``."""
+    return {
+        slot_id: (aes_key, hmac_key) for slot_id, _, aes_key, hmac_key in _parse_slot_records(blob)
+    }
+
+
+def load_writable_document_key(passphrase: str, encrypted_plist: bytes) -> tuple[int, bytes, bytes]:
     """Return the active AES/HMAC key slot for outbound encryption.
 
     Args:
@@ -191,9 +190,7 @@ def load_writable_document_key(
     try:
         data = plistlib.loads(encrypted_plist)
     except Exception as exc:
-        raise OFEncryptionError(
-            f"Failed to parse 'encrypted' plist: {exc}"
-        ) from exc
+        raise OFEncryptionError(f"Failed to parse 'encrypted' plist: {exc}") from exc
 
     if isinstance(data, list):
         data = data[0]
@@ -202,9 +199,7 @@ def load_writable_document_key(
     rounds = int(data["rounds"])
     prf_str = data.get("prf", "sha1")
     if prf_str not in _PRF_MAP:
-        raise OFEncryptionError(
-            f"Unsupported PRF algorithm in 'encrypted' plist: {prf_str!r}"
-        )
+        raise OFEncryptionError(f"Unsupported PRF algorithm in 'encrypted' plist: {prf_str!r}")
 
     kdf = PBKDF2HMAC(
         algorithm=_PRF_MAP[prf_str](),
@@ -263,12 +258,10 @@ def decrypt_file(data: bytes, aes_key: bytes, hmac_key: bytes) -> bytes:
 
     while pos < segments_end:
         if segments_end - pos < _SEG_IV_LEN + _SEG_MAC_LEN:
-            raise OFEncryptionError(
-                f"Truncated segment {seg_idx}: not enough bytes for IV + MAC"
-            )
+            raise OFEncryptionError(f"Truncated segment {seg_idx}: not enough bytes for IV + MAC")
 
-        iv = data[pos: pos + _SEG_IV_LEN]
-        seg_mac = bytes(data[pos + _SEG_IV_LEN: pos + _SEG_IV_LEN + _SEG_MAC_LEN])
+        iv = data[pos : pos + _SEG_IV_LEN]
+        seg_mac = bytes(data[pos + _SEG_IV_LEN : pos + _SEG_IV_LEN + _SEG_MAC_LEN])
         ct_start = pos + _SEG_IV_LEN + _SEG_MAC_LEN
         ct_end = min(ct_start + _SEGMENT_SIZE, segments_end)
         ct = data[ct_start:ct_end]
@@ -281,8 +274,7 @@ def decrypt_file(data: bytes, aes_key: bytes, hmac_key: bytes) -> bytes:
         computed_mac = h.digest()[:_SEG_MAC_LEN]
         if not _hmac.compare_digest(computed_mac, seg_mac):
             raise OFEncryptionError(
-                f"Segment {seg_idx} MAC verification failed — "
-                "wrong key or corrupted data"
+                f"Segment {seg_idx} MAC verification failed — " "wrong key or corrupted data"
             )
 
         # Decrypt: AES-128-CTR with nonce = IV || 0x00000000
@@ -302,9 +294,7 @@ def decrypt_file(data: bytes, aes_key: bytes, hmac_key: bytes) -> bytes:
         h.update(m)
     computed_file_hmac = h.digest()
     if not _hmac.compare_digest(computed_file_hmac, bytes(file_hmac_stored)):
-        raise OFEncryptionError(
-            "File HMAC verification failed — wrong key or corrupted data"
-        )
+        raise OFEncryptionError("File HMAC verification failed — wrong key or corrupted data")
 
     return b"".join(plaintext_parts)
 
@@ -314,9 +304,7 @@ def decrypt_file(data: bytes, aes_key: bytes, hmac_key: bytes) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def encrypt_file(
-    data: bytes, aes_key: bytes, hmac_key: bytes, key_id: int = 1
-) -> bytes:
+def encrypt_file(data: bytes, aes_key: bytes, hmac_key: bytes, key_id: int = 1) -> bytes:
     """Encrypt *data* in OmniFileEncryption v2 format.
 
     Args:
@@ -335,7 +323,7 @@ def encrypt_file(
     file_header = header_core + b"\x00" * pad_len
 
     # Split plaintext into segments (at least one, even for empty data)
-    chunks = [data[i: i + _SEGMENT_SIZE] for i in range(0, len(data), _SEGMENT_SIZE)]
+    chunks = [data[i : i + _SEGMENT_SIZE] for i in range(0, len(data), _SEGMENT_SIZE)]
     if not chunks:
         chunks = [b""]
 
@@ -399,9 +387,7 @@ def create_encrypted_bundle(
     slot_data = aes_key + hmac_key  # 32 bytes
     data_len_units = len(slot_data) // 4  # 8
     slot_blob = (
-        bytes([_SLOT_ACTIVE_AES_CTR_HMAC, data_len_units])
-        + struct.pack(">H", slot_id)
-        + slot_data
+        bytes([_SLOT_ACTIVE_AES_CTR_HMAC, data_len_units]) + struct.pack(">H", slot_id) + slot_data
     )
     # Terminate with a type-0 byte and pad to a multiple of 8 (AES key-wrap requirement)
     slot_blob += b"\x00"
@@ -422,7 +408,7 @@ def create_encrypted_bundle(
     wrapped = aes_key_wrap(wrapping_key, slot_blob)
 
     # Assemble the plist
-    plist_data: dict = {
+    plist_data: dict[str, object] = {
         "method": "password",
         "algorithm": "PBKDF2; aes128-wrap",
         "rounds": _TEST_PBKDF2_ROUNDS,
@@ -462,9 +448,7 @@ def decrypt(file_data: bytes, passphrase: str, encrypted_plist: bytes) -> bytes:
     """
     doc_keys = load_document_keys(passphrase, encrypted_plist)
     _, offset = parse_file_header(file_data)
-    key_id = int.from_bytes(
-        file_data[MAGIC_LEN + 2: MAGIC_LEN + 4], "big"
-    )
+    key_id = int.from_bytes(file_data[MAGIC_LEN + 2 : MAGIC_LEN + 4], "big")
     if key_id not in doc_keys:
         raise OFEncryptionError(f"Key slot {key_id} not found in document keys")
     aes_key, hmac_key = doc_keys[key_id]

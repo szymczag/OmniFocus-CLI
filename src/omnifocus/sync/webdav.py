@@ -19,15 +19,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import AsyncIterator
 from urllib.parse import urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
 import httpx
 
-log = logging.getLogger(__name__)
-
 from omnifocus.errors import OFWebDAVError
+
+log = logging.getLogger(__name__)
 
 # WebDAV PROPFIND response namespace
 _DAV_NS = "{DAV:}"
@@ -131,9 +130,7 @@ class WebDAVClient:
         if not password:
             missing.append("OF_WEBDAV_PASS")
         if missing:
-            raise OFWebDAVError(
-                f"Missing required environment variables: {', '.join(missing)}"
-            )
+            raise OFWebDAVError(f"Missing required environment variables: {', '.join(missing)}")
 
         return cls(base_url=clean_url, username=username, password=password)
 
@@ -165,7 +162,7 @@ class WebDAVClient:
         )
 
         try:
-            root = ET.fromstring(response)
+            root = ET.fromstring(response)  # noqa: S314
         except ET.ParseError as exc:
             raise OFWebDAVError(f"PROPFIND response is not valid XML: {exc}") from exc
 

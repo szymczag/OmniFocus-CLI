@@ -31,10 +31,9 @@ Usage::
 from __future__ import annotations
 
 import io
-import zipfile
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
-from typing import Optional
+import zipfile
+from datetime import UTC, datetime
 
 from omnifocus.errors import OFParseError
 from omnifocus.models import Folder, OFModel, Project, Tag, Task
@@ -43,7 +42,7 @@ from omnifocus.models import Folder, OFModel, Project, Tag, Task
 _NS = "{http://www.omnigroup.com/namespace/OmniFocus/v2}"
 
 # Sentinel: a datetime that will never match a real modification time
-_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +73,7 @@ def load_xml_from_zip(zip_bytes: bytes) -> ET.Element:
         raise OFParseError(f"Invalid ZIP archive: {exc}") from exc
 
     try:
-        return ET.fromstring(data.decode("utf-8"))
+        return ET.fromstring(data.decode("utf-8"))  # noqa: S314
     except ET.ParseError as exc:
         raise OFParseError(f"Malformed XML in contents.xml: {exc}") from exc
     except UnicodeDecodeError as exc:
@@ -102,7 +101,7 @@ def _bool(el: ET.Element, local: str, default: bool = False) -> bool:
     return raw.lower() == "true"
 
 
-def _int(el: ET.Element, local: str, default: Optional[int] = None) -> Optional[int]:
+def _int(el: ET.Element, local: str, default: int | None = None) -> int | None:
     """Return the integer text value of a child element, or *default*."""
     raw = _text(el, local)
     if not raw:
@@ -113,7 +112,7 @@ def _int(el: ET.Element, local: str, default: Optional[int] = None) -> Optional[
         return default
 
 
-def _parse_dt_utc(value: str) -> Optional[datetime]:
+def _parse_dt_utc(value: str) -> datetime | None:
     """Parse an ISO 8601 UTC timestamp (with trailing ``Z``) to a UTC datetime.
 
     Args:
@@ -130,7 +129,7 @@ def _parse_dt_utc(value: str) -> Optional[datetime]:
         return None
 
 
-def _parse_dt_local(value: str) -> Optional[datetime]:
+def _parse_dt_local(value: str) -> datetime | None:
     """Parse a local-time ISO 8601 datetime (no timezone suffix).
 
     Args:
@@ -145,7 +144,7 @@ def _parse_dt_local(value: str) -> Optional[datetime]:
         return None
 
 
-def _idref(el: ET.Element, local: str) -> Optional[str]:
+def _idref(el: ET.Element, local: str) -> str | None:
     """Return the ``idref`` attribute of a single child element, or ``None``."""
     child = el.find(_tag(local))
     if child is None:
@@ -192,7 +191,7 @@ def _index_elements(root: ET.Element, index: _RawIndex) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_folder(el: ET.Element) -> Optional[Folder]:
+def _build_folder(el: ET.Element) -> Folder | None:
     """Convert a raw ``<folder>`` XML element into a :class:`Folder`.
 
     Returns ``None`` if mandatory fields are missing or unparseable.
@@ -220,7 +219,7 @@ def _build_folder(el: ET.Element) -> Optional[Folder]:
 # ---------------------------------------------------------------------------
 
 
-def _build_tag(el: ET.Element) -> Optional[Tag]:
+def _build_tag(el: ET.Element) -> Tag | None:
     """Convert a raw ``<context>`` XML element into a :class:`Tag`."""
     tid = el.get("id")
     name = _text(el, "name")
@@ -251,7 +250,7 @@ def _is_project(task_el: ET.Element) -> bool:
     return proj_child is not None and len(list(proj_child)) > 0
 
 
-def _build_project(el: ET.Element) -> Optional[Project]:
+def _build_project(el: ET.Element) -> Project | None:
     """Convert a project ``<task>`` element into a :class:`Project`."""
     pid = el.get("id")
     name = _text(el, "name")
@@ -259,7 +258,7 @@ def _build_project(el: ET.Element) -> Optional[Project]:
         return None
 
     proj = el.find(_tag("project"))
-    folder_id: Optional[str] = None
+    folder_id: str | None = None
     status = "active"
     singleton = False
     if proj is not None:
@@ -269,11 +268,7 @@ def _build_project(el: ET.Element) -> Optional[Project]:
             status = raw_status
         singleton = _bool(proj, "singleton")
 
-    tag_ids = tuple(
-        c.get("idref", "")
-        for c in el.findall(_tag("context"))
-        if c.get("idref")
-    )
+    tag_ids = tuple(c.get("idref", "") for c in el.findall(_tag("context")) if c.get("idref"))
 
     return Project(
         id=pid,
@@ -293,7 +288,7 @@ def _build_project(el: ET.Element) -> Optional[Project]:
     )
 
 
-def _build_task(el: ET.Element, project_id: Optional[str]) -> Optional[Task]:
+def _build_task(el: ET.Element, project_id: str | None) -> Task | None:
     """Convert a leaf/intermediate ``<task>`` XML element into a :class:`Task`.
 
     Args:
@@ -309,11 +304,7 @@ def _build_task(el: ET.Element, project_id: Optional[str]) -> Optional[Task]:
     hidden_raw = _text(el, "hidden")
     hidden = _parse_dt_utc(hidden_raw) if hidden_raw else None
 
-    tag_ids = tuple(
-        c.get("idref", "")
-        for c in el.findall(_tag("context"))
-        if c.get("idref")
-    )
+    tag_ids = tuple(c.get("idref", "") for c in el.findall(_tag("context")) if c.get("idref"))
 
     return Task(
         id=tid,
@@ -345,7 +336,7 @@ def _build_task(el: ET.Element, project_id: Optional[str]) -> Optional[Task]:
 def _resolve_project_ids(
     raw_tasks: dict[str, ET.Element],
     project_ids: set[str],
-) -> dict[str, Optional[str]]:
+) -> dict[str, str | None]:
     """Build a mapping from every task id to its containing project id.
 
     Uses memoised traversal of the parent chain (``<task idref="..."/>``) to
@@ -359,9 +350,9 @@ def _resolve_project_ids(
         Dict mapping each task id → project id (or ``None`` for inbox tasks
         that have no parent project).
     """
-    memo: dict[str, Optional[str]] = {}
+    memo: dict[str, str | None] = {}
 
-    def resolve(tid: str, visited: set[str]) -> Optional[str]:
+    def resolve(tid: str, visited: set[str]) -> str | None:
         if tid in memo:
             return memo[tid]
         if tid in visited:
