@@ -11,7 +11,7 @@ from omnifocus.sync.webdav import WebDAVClient
 
 BASE_URL = "https://dav.example.com/omnifocus/OmniFocus.ofocus/"
 
-# Minimal PROPFIND response listing two ZIPs
+# Minimal PROPFIND response listing bundle entries
 _PROPFIND_RESPONSE = """\
 <?xml version="1.0" encoding="utf-8"?>
 <d:multistatus xmlns:d="DAV:">
@@ -33,6 +33,27 @@ _PROPFIND_RESPONSE = """\
     <d:href>/omnifocus/OmniFocus.ofocus/20260322T154011=xyz+abc.zip</d:href>
     <d:propstat>
       <d:prop><d:displayname>20260322T154011=xyz+abc.zip</d:displayname></d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/omnifocus/OmniFocus.ofocus/20260322154012=clientA.client</d:href>
+    <d:propstat>
+      <d:prop><d:displayname>20260322154012=clientA.client</d:displayname></d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/omnifocus/OmniFocus.ofocus/data</d:href>
+    <d:propstat>
+      <d:prop><d:displayname>data</d:displayname></d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/omnifocus/OmniFocus.ofocus/folder</d:href>
+    <d:propstat>
+      <d:prop><d:displayname>folder</d:displayname></d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
     </d:propstat>
   </d:response>
@@ -115,6 +136,18 @@ class TestFromEnv:
 class TestListBundle:
     @pytest.mark.asyncio
     @respx.mock
+    async def test_list_entries_returns_bundle_files(self) -> None:
+        respx.route(method="PROPFIND", url=BASE_URL).mock(
+            return_value=httpx.Response(207, text=_PROPFIND_RESPONSE)
+        )
+        async with _make_client() as client:
+            files = await client.list_entries()
+        assert "00000000000000=abc+xyz.zip" in files
+        assert "20260322T154011=xyz+abc.zip" in files
+        assert "20260322154012=clientA.client" in files
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_returns_sorted_zip_names(self) -> None:
         respx.route(method="PROPFIND", url=BASE_URL).mock(
             return_value=httpx.Response(207, text=_PROPFIND_RESPONSE)
@@ -124,6 +157,7 @@ class TestListBundle:
 
         assert "00000000000000=abc+xyz.zip" in files
         assert "20260322T154011=xyz+abc.zip" in files
+        assert "20260322154012=clientA.client" not in files
         # must be sorted
         assert files == sorted(files)
 
@@ -135,7 +169,7 @@ class TestListBundle:
             return_value=httpx.Response(207, text=_PROPFIND_RESPONSE)
         )
         async with _make_client() as client:
-            files = await client.list_bundle()
+            files = await client.list_entries()
         assert not any(f.endswith("/") or "ofocus" == f for f in files)
 
     @pytest.mark.asyncio
@@ -227,6 +261,26 @@ class TestPutFile:
             async with _make_client() as client:
                 await client.put_file("tx.zip", b"data")
         assert exc_info.value.status_code == 403
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_client_put_uses_xml_content_type(self) -> None:
+        url = BASE_URL + "20260322154012=clientA.client"
+        route = respx.put(url).mock(return_value=httpx.Response(201))
+        async with _make_client() as client:
+            await client.put_file("20260322154012=clientA.client", b"<plist/>")
+        assert route.calls.last is not None
+        assert route.calls.last.request.headers["Content-Type"] == "application/xml"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_other_put_uses_octet_stream_content_type(self) -> None:
+        url = BASE_URL + "encrypted"
+        route = respx.put(url).mock(return_value=httpx.Response(201))
+        async with _make_client() as client:
+            await client.put_file("encrypted", b"data")
+        assert route.calls.last is not None
+        assert route.calls.last.request.headers["Content-Type"] == "application/octet-stream"
 
 
 # ---------------------------------------------------------------------------

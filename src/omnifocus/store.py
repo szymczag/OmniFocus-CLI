@@ -60,22 +60,40 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from omnifocus.crypto.discovery import is_encrypted
-from omnifocus.errors import OFEncryptionError, OFError
+from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
 from omnifocus.models import OFModel, Project, Task
 from omnifocus.parser import build_model
+from omnifocus.sync.client_state import (
+    ClientStateDocument,
+    create_client_state_document,
+    default_device_name,
+    default_host_id,
+    parse_client_state_plist,
+    serialise_client_state_plist,
+)
 from omnifocus.sync.protocol import (
+    BundleState,
+    ClientStateRef,
+    build_bundle_state,
     classify_bundle_files,
-    latest_transaction_ref,
 )
 from omnifocus.sync.webdav import WebDAVClient
-from omnifocus.writer import TaskWriter, generate_id
+from omnifocus.writer import (
+    AddTaskPlan,
+    TaskWriter,
+    WritePlan,
+    WriterContext,
+    generate_id,
+)
 
 log = logging.getLogger(__name__)
 
 _CACHE_FILENAME = "of_model.pkl"
 _WRITER_STATE_FILENAME = "writer_state.json"
-BundleFingerprint = tuple[str, tuple[str, ...]]
+BundleFingerprint = tuple[str, tuple[str, ...], tuple[str, ...]]
 DocumentKeys = dict[int, tuple[bytes, bytes]]
+WriteStrategy = str
+ChainShape = str
 
 
 @dataclasses.dataclass(frozen=True)
@@ -91,7 +109,16 @@ class _WriterState:
     """Serializable local writer state used for sync interoperability."""
 
     client_id: str
-    predecessor_id: str
+    host_id: str
+    device_name: str
+    registration_date: datetime
+    tail_identifiers: tuple[str, ...]
+    hardware_cpu_count: str | None
+    hardware_cpu_type: str | None
+    hardware_cpu_type_name: str | None
+    hardware_model: str | None
+    os_version: str | None
+    os_version_number: str | None
     encrypted: bool
     bundle_fingerprint: BundleFingerprint | None
 
@@ -169,8 +196,8 @@ class OFocusStore:
         Returns:
             A fully-populated :class:`OFModel`.
         """
-        filenames = await self._client.list_bundle()
-        bundle_fingerprint = _bundle_fingerprint(filenames)
+        entries = await self._client.list_entries()
+        bundle_fingerprint = _bundle_fingerprint(entries)
 
         if not force_refresh:
             cached = self._load_from_cache()
@@ -183,7 +210,7 @@ class OFocusStore:
                 return cached.model
 
         return await self._sync_and_build(
-            filenames=filenames,
+            filenames=entries,
             bundle_fingerprint=bundle_fingerprint,
         )
 
@@ -199,6 +226,7 @@ class OFocusStore:
         cache_age: float | None = None
         cached = False
         cache_valid = False
+        remote_entries: list[str] | None = None
 
         if self._cache_path.exists():
             cached = True
@@ -208,15 +236,139 @@ class OFocusStore:
             last_synced = ts.isoformat()
             cached_payload = self._load_from_cache()
             if cached_payload is not None and cached_payload.bundle_fingerprint is not None:
-                filenames = await self._client.list_bundle()
-                cache_valid = cached_payload.bundle_fingerprint == _bundle_fingerprint(filenames)
+                remote_entries = await self._client.list_entries()
+                cache_valid = cached_payload.bundle_fingerprint == _bundle_fingerprint(
+                    remote_entries
+                )
 
+        state = self._load_writer_state()
+        current_tail_identifier = None
+        if cached and cache_valid:
+            try:
+                entries = remote_entries or await self._client.list_entries()
+                current_tail_identifier = self._current_tail_id(
+                    build_bundle_state(entries),
+                    await self._load_remote_client_documents(build_bundle_state(entries)),
+                )
+            except OFError:
+                current_tail_identifier = None
         return {
             "last_synced": last_synced,
             "cached": cached,
             "cache_age_seconds": cache_age,
             "cache_valid": cache_valid,
+            "bundle_state_version": 2,
+            "registered_client": state is not None,
+            "tail_identifiers": list(state.tail_identifiers) if state is not None else [],
+            "advertised_tail_identifiers": (
+                list(state.tail_identifiers) if state is not None else []
+            ),
+            "client_id": state.client_id if state is not None else None,
+            "host_id": state.host_id if state is not None else None,
+            "current_tail_identifier": current_tail_identifier,
         }
+
+    async def bundle_state(self) -> dict[str, Any]:
+        """Return a parsed debug view of the remote bundle state."""
+        state = build_bundle_state(await self._client.list_entries())
+        remote_clients = await self._load_remote_client_documents(state)
+        return {
+            "baseline": {
+                "filename": state.baseline.filename,
+                "snapshot_id": state.baseline.snapshot_id,
+                "tail_id": state.baseline.tail_id,
+            },
+            "deltas": [
+                {
+                    "filename": delta.filename,
+                    "timestamp": delta.timestamp.isoformat(),
+                    "head_id": delta.head_id,
+                    "parent_tail_id": delta.parent_tail_id,
+                }
+                for delta in state.deltas
+            ],
+            "clients": [
+                {
+                    "filename": ref.filename,
+                    "client_id": ref.client_id,
+                    "timestamp": ref.timestamp.isoformat(),
+                    "tail_identifiers": (
+                        list(remote_clients[ref.client_id].tail_identifiers)
+                        if ref.client_id in remote_clients
+                        else []
+                    ),
+                }
+                for ref in state.clients
+            ],
+            "capabilities": list(state.capabilities),
+            "other_entries": list(state.other_entries),
+        }
+
+    async def fetch_file(self, name: str) -> bytes:
+        """Return a raw file from the remote bundle."""
+        return await self._client.get_file(name)
+
+    async def fetch_latest_deltas(
+        self,
+        *,
+        count: int = 1,
+        client_id: str | None = None,
+    ) -> list[tuple[str, bytes]]:
+        """Return the newest delta ZIPs, optionally scoped to one client tail."""
+        state = build_bundle_state(await self._client.list_entries())
+        remote_clients = await self._load_remote_client_documents(state)
+        deltas = list(state.deltas)
+        if client_id is not None:
+            ref = self._latest_client_ref(state, client_id)
+            if ref is None:
+                raise OFError(f"No client state found for client {client_id!r}")
+            document = remote_clients.get(client_id)
+            if document is None or not document.tail_identifiers:
+                raise OFError(f"Client {client_id!r} has no advertised tail identifier")
+            target_tail = document.tail_identifiers[0]
+            deltas = [delta for delta in deltas if delta.head_id == target_tail]
+            if not deltas:
+                raise OFError(
+                    f"No delta ZIP found for client {client_id!r} and tail {target_tail!r}"
+                )
+        selected = deltas[-count:] if count > 0 else []
+        return [(delta.filename, await self._client.get_file(delta.filename)) for delta in selected]
+
+    async def fetch_latest_client(
+        self,
+        *,
+        client_id: str | None = None,
+    ) -> tuple[str, bytes]:
+        """Return the newest client state file, optionally for a specific client."""
+        state = build_bundle_state(await self._client.list_entries())
+        ref = self._latest_client_ref(state, client_id)
+        if ref is None:
+            if client_id is None:
+                raise OFError("No client state files found in bundle")
+            raise OFError(f"No client state found for client {client_id!r}")
+        return ref.filename, await self._client.get_file(ref.filename)
+
+    async def decrypt_latest_delta(
+        self,
+        *,
+        client_id: str | None = None,
+    ) -> tuple[str, str]:
+        """Download, decrypt, and return the newest delta ``contents.xml``."""
+        latest = await self.fetch_latest_deltas(count=1, client_id=client_id)
+        if not latest:
+            raise OFError("No delta ZIPs found in bundle")
+        filename, payload = latest[0]
+        try:
+            encrypted_plist = await self._client.get_file("encrypted")
+        except OFWebDAVError as exc:
+            if exc.status_code == 404:
+                encrypted_plist = b""
+            else:
+                raise
+        return filename, self.decrypt_transaction_contents_xml(
+            encrypted_plist_bytes=encrypted_plist,
+            file_bytes=payload,
+        )
 
     async def add_task(
         self,
@@ -232,8 +384,10 @@ class OFocusStore:
         rank: int | None = None,
     ) -> dict[str, str]:
         """Create and upload a task transaction."""
-        writer, encrypted_plist, key_slot = await self._prepare_writer()
-        filename, payload, task_id = writer.add_task(
+        writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
+        write_strategy = _configured_write_strategy()
+        chain_shape = _configured_chain_shape()
+        plan = writer.add_task(
             name=name,
             parent_task_id=parent_task_id,
             inbox=inbox,
@@ -243,38 +397,64 @@ class OFocusStore:
             note=note,
             estimated_minutes=estimated_minutes,
             rank=rank,
+            write_strategy=write_strategy,
+            chain_shape=chain_shape,
         )
-        await self._upload_transaction(
-            filename,
-            payload,
+        await self._upload_task_plan(
+            plan,
             encrypted_plist=encrypted_plist,
             key_slot=key_slot,
+            writer_state=writer_state,
         )
-        return {"status": "created", "task_id": task_id, "name": name}
+        return {"status": "created", "task_id": plan.task_id, "name": name}
 
     async def update_task(self, task: Task) -> dict[str, str]:
         """Upload a task upsert transaction."""
-        writer, encrypted_plist, key_slot = await self._prepare_writer()
-        filename, payload = writer.upsert_task(task)
-        await self._upload_transaction(
-            filename,
-            payload,
+        writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
+        plan = writer.update_task(
+            task,
+            write_strategy=_configured_write_strategy(),
+            chain_shape=_configured_chain_shape(),
+        )
+        await self._upload_write_plan(
+            plan,
             encrypted_plist=encrypted_plist,
             key_slot=key_slot,
+            writer_state=writer_state,
         )
         return {"status": "updated", "task_id": task.id, "name": task.name}
 
     async def complete_task(self, task: Task) -> dict[str, str]:
         """Upload a task completion transaction."""
-        writer, encrypted_plist, key_slot = await self._prepare_writer()
-        filename, payload = writer.complete_task(task)
-        await self._upload_transaction(
-            filename,
-            payload,
+        writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
+        plan = writer.complete_task(
+            task,
+            write_strategy=_configured_write_strategy(),
+            chain_shape=_configured_chain_shape(),
+        )
+        await self._upload_write_plan(
+            plan,
             encrypted_plist=encrypted_plist,
             key_slot=key_slot,
+            writer_state=writer_state,
         )
         return {"status": "completed", "task_id": task.id, "name": task.name}
+
+    async def drop_task(self, task: Task) -> dict[str, str]:
+        """Upload a task drop transaction."""
+        writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
+        plan = writer.drop_task(
+            task,
+            write_strategy=_configured_write_strategy(),
+            chain_shape=_configured_chain_shape(),
+        )
+        await self._upload_write_plan(
+            plan,
+            encrypted_plist=encrypted_plist,
+            key_slot=key_slot,
+            writer_state=writer_state,
+        )
+        return {"status": "dropped", "task_id": task.id, "name": task.name}
 
     async def add_project(
         self,
@@ -290,8 +470,8 @@ class OFocusStore:
         rank: int | None = None,
     ) -> dict[str, str]:
         """Create and upload a project transaction."""
-        writer, encrypted_plist, key_slot = await self._prepare_writer()
-        filename, payload, project_id = writer.add_project(
+        writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
+        plan = writer.add_project(
             name=name,
             folder_id=folder_id,
             status=status,
@@ -301,38 +481,64 @@ class OFocusStore:
             note=note,
             singleton=singleton,
             rank=rank,
+            write_strategy=_configured_write_strategy(),
+            chain_shape=_configured_chain_shape(),
         )
-        await self._upload_transaction(
-            filename,
-            payload,
+        await self._upload_write_plan(
+            plan,
             encrypted_plist=encrypted_plist,
             key_slot=key_slot,
+            writer_state=writer_state,
         )
-        return {"status": "created", "project_id": project_id, "name": name}
+        return {"status": "created", "project_id": plan.project_id, "name": name}
 
     async def update_project(self, project: Project) -> dict[str, str]:
         """Upload a project upsert transaction."""
-        writer, encrypted_plist, key_slot = await self._prepare_writer()
-        filename, payload = writer.upsert_project(project)
-        await self._upload_transaction(
-            filename,
-            payload,
+        writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
+        plan = writer.update_project(
+            project,
+            write_strategy=_configured_write_strategy(),
+            chain_shape=_configured_chain_shape(),
+        )
+        await self._upload_write_plan(
+            plan,
             encrypted_plist=encrypted_plist,
             key_slot=key_slot,
+            writer_state=writer_state,
         )
         return {"status": "updated", "project_id": project.id, "name": project.name}
 
     async def complete_project(self, project: Project) -> dict[str, str]:
         """Upload a project completion transaction."""
-        writer, encrypted_plist, key_slot = await self._prepare_writer()
-        filename, payload = writer.complete_project(project)
-        await self._upload_transaction(
-            filename,
-            payload,
+        writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
+        plan = writer.complete_project(
+            project,
+            write_strategy=_configured_write_strategy(),
+            chain_shape=_configured_chain_shape(),
+        )
+        await self._upload_write_plan(
+            plan,
             encrypted_plist=encrypted_plist,
             key_slot=key_slot,
+            writer_state=writer_state,
         )
         return {"status": "completed", "project_id": project.id, "name": project.name}
+
+    async def drop_project(self, project: Project) -> dict[str, str]:
+        """Upload a project drop transaction."""
+        writer, encrypted_plist, key_slot, writer_state = await self._prepare_writer()
+        plan = writer.drop_project(
+            project,
+            write_strategy=_configured_write_strategy(),
+            chain_shape=_configured_chain_shape(),
+        )
+        await self._upload_write_plan(
+            plan,
+            encrypted_plist=encrypted_plist,
+            key_slot=key_slot,
+            writer_state=writer_state,
+        )
+        return {"status": "dropped", "project_id": project.id, "name": project.name}
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -383,38 +589,95 @@ class OFocusStore:
 
     async def _prepare_writer(
         self,
-    ) -> tuple[TaskWriter, bytes | None, tuple[int, bytes, bytes] | None]:
-        """Resolve writer state, predecessor, and outbound encryption settings."""
-        filenames = await self._client.list_bundle()
-        bundle_fingerprint = _bundle_fingerprint(filenames)
+    ) -> tuple[TaskWriter, bytes | None, tuple[int, bytes, bytes] | None, _WriterState]:
+        """Resolve writer state, bundle tail, and outbound encryption settings."""
+        entries = await self._client.list_entries()
+        bundle_state = build_bundle_state(entries)
+        bundle_fingerprint = _bundle_fingerprint(entries)
         encrypted_plist: bytes | None = None
         key_slot: tuple[int, bytes, bytes] | None = None
 
-        baseline_name, _ = classify_bundle_files(filenames)
-        baseline_raw = await self._client.get_file(baseline_name)
+        baseline_raw = await self._client.get_file(bundle_state.baseline.filename)
         encrypted = is_encrypted(baseline_raw)
 
         state = self._load_writer_state()
-        client_id = state.client_id if state is not None else generate_id()
-
-        latest_tx = latest_transaction_ref(filenames)
-        predecessor_id = client_id if latest_tx is None else latest_tx.client_id
-        if latest_tx is not None and latest_tx.parent_id == "":
-            raise OFError(f"Malformed latest transaction filename: {latest_tx.filename}")
+        remote_clients = await self._load_remote_client_documents(bundle_state)
+        current_accepted_tail = self._current_tail_id(bundle_state, remote_clients)
+        if current_accepted_tail is None:
+            raise OFError("Bundle has no known tail identifier")
+        next_tail_id = generate_id()
+        template = self._select_client_template(bundle_state, remote_clients)
 
         if encrypted:
             encrypted_plist = await self._client.get_file("encrypted")
             key_slot = self._load_writable_key_slot(encrypted_plist)
 
-        self._save_writer_state(
-            _WriterState(
-                client_id=client_id,
-                predecessor_id=predecessor_id,
-                encrypted=encrypted,
-                bundle_fingerprint=bundle_fingerprint,
-            )
+        writer_state = self._build_writer_state(
+            previous_state=state,
+            template=template,
+            accepted_tail=current_accepted_tail,
+            encrypted=encrypted,
+            bundle_fingerprint=bundle_fingerprint,
         )
-        return TaskWriter(client_id=client_id, parent_id=predecessor_id), encrypted_plist, key_slot
+        self._save_writer_state(writer_state)
+        writer_context = WriterContext(
+            os_name=_writer_context_os_name(),
+            os_version=writer_state.os_version_number,
+            machine_model=writer_state.hardware_model,
+        )
+        return (
+            TaskWriter(
+                head_id=next_tail_id,
+                parent_tail_id=current_accepted_tail,
+                context=writer_context,
+            ),
+            encrypted_plist,
+            key_slot,
+            writer_state,
+        )
+
+    async def _upload_task_plan(
+        self,
+        plan: AddTaskPlan,
+        *,
+        encrypted_plist: bytes | None,
+        key_slot: tuple[int, bytes, bytes] | None,
+        writer_state: _WriterState,
+    ) -> None:
+        """Upload a multi-delta task creation plan."""
+        if not plan.deltas:
+            raise OFError("Task creation plan produced no deltas")
+
+        for delta in plan.deltas:
+            await self._upload_transaction(
+                delta.filename,
+                delta.data,
+                encrypted_plist=encrypted_plist,
+                key_slot=key_slot,
+                writer_state=writer_state,
+                upload_client_state=delta.refresh_client_after,
+            )
+
+    async def _upload_write_plan(
+        self,
+        plan: WritePlan,
+        *,
+        encrypted_plist: bytes | None,
+        key_slot: tuple[int, bytes, bytes] | None,
+        writer_state: _WriterState,
+    ) -> None:
+        """Upload a generic write plan."""
+        if not plan.deltas:
+            raise OFError("Write plan produced no deltas")
+        for delta in plan.deltas:
+            await self._upload_transaction(
+                delta.filename,
+                delta.data,
+                encrypted_plist=encrypted_plist,
+                key_slot=key_slot,
+                writer_state=writer_state,
+                upload_client_state=delta.refresh_client_after,
+            )
 
     async def _upload_transaction(
         self,
@@ -423,8 +686,10 @@ class OFocusStore:
         *,
         encrypted_plist: bytes | None,
         key_slot: tuple[int, bytes, bytes] | None,
+        writer_state: _WriterState,
+        upload_client_state: bool = True,
     ) -> None:
-        """Upload a transaction and update local cache/writer state."""
+        """Upload a delta ZIP and matching ``.client`` state update."""
         upload_bytes = payload
         if encrypted_plist is not None:
             if key_slot is None:
@@ -435,19 +700,221 @@ class OFocusStore:
             upload_bytes = encrypt_file(payload, aes_key, hmac_key, key_id=slot_id)
 
         await self._client.put_file(filename, upload_bytes)
+        if upload_client_state:
+            client_filename, client_payload = self._build_client_state_payload(
+                writer_state, filename
+            )
+            await self._client.put_file(client_filename, client_payload)
         self.invalidate_cache()
 
-        state = self._load_writer_state()
-        if state is None:
-            return
         self._save_writer_state(
             _WriterState(
-                client_id=state.client_id,
-                predecessor_id=filename.split("=", 1)[1].split("+", 1)[0],
+                client_id=writer_state.client_id,
+                host_id=writer_state.host_id,
+                device_name=writer_state.device_name,
+                registration_date=writer_state.registration_date,
+                tail_identifiers=writer_state.tail_identifiers,
+                hardware_cpu_count=writer_state.hardware_cpu_count,
+                hardware_cpu_type=writer_state.hardware_cpu_type,
+                hardware_cpu_type_name=writer_state.hardware_cpu_type_name,
+                hardware_model=writer_state.hardware_model,
+                os_version=writer_state.os_version,
+                os_version_number=writer_state.os_version_number,
                 encrypted=encrypted_plist is not None,
                 bundle_fingerprint=None,
             )
         )
+
+    async def _load_remote_client_documents(
+        self, state: BundleState
+    ) -> dict[str, ClientStateDocument]:
+        """Download and parse remote ``.client`` plist documents."""
+        documents: dict[str, ClientStateDocument] = {}
+        for ref in state.clients:
+            data = await self._client.get_file(ref.filename)
+            documents[ref.client_id] = parse_client_state_plist(data)
+        return documents
+
+    def _select_client_template(
+        self,
+        state: BundleState,
+        remote_clients: dict[str, ClientStateDocument],
+    ) -> ClientStateDocument | None:
+        """Return the latest remote client document as a template, if available."""
+        for ref in reversed(state.clients):
+            if ref.client_id in remote_clients:
+                return remote_clients[ref.client_id]
+        return None
+
+    def _latest_client_ref(
+        self,
+        state: BundleState,
+        client_id: str | None,
+    ) -> ClientStateRef | None:
+        """Return the newest client state ref, optionally scoped by client id."""
+        refs = list(state.clients)
+        if client_id is not None:
+            refs = [ref for ref in refs if ref.client_id == client_id]
+        return refs[-1] if refs else None
+
+    def _current_tail_id(
+        self,
+        state: BundleState,
+        remote_clients: dict[str, ClientStateDocument],
+    ) -> str | None:
+        """Return the best-known current tail identifier."""
+        for ref in reversed(state.clients):
+            document = remote_clients.get(ref.client_id)
+            if document is not None and document.tail_identifiers:
+                return document.tail_identifiers[0]
+        if state.deltas:
+            return state.deltas[-1].head_id
+        if state.baseline.tail_id:
+            return state.baseline.tail_id
+        return None
+
+    def _build_writer_state(
+        self,
+        *,
+        previous_state: _WriterState | None,
+        template: ClientStateDocument | None,
+        accepted_tail: str,
+        encrypted: bool,
+        bundle_fingerprint: BundleFingerprint,
+    ) -> _WriterState:
+        """Build a stable local writer state from local state or a remote template."""
+        if previous_state is not None:
+            return dataclasses.replace(
+                previous_state,
+                client_id=_configured_client_id(previous_state.client_id),
+                host_id=_configured_host_id(previous_state.host_id),
+                device_name=_configured_device_name(previous_state.device_name),
+                tail_identifiers=(accepted_tail,),
+                hardware_cpu_count=_configured_optional_env(
+                    "OF_DEVICE_HARDWARE_CPU_COUNT", previous_state.hardware_cpu_count
+                ),
+                hardware_cpu_type=_configured_optional_env(
+                    "OF_DEVICE_HARDWARE_CPU_TYPE", previous_state.hardware_cpu_type
+                ),
+                hardware_cpu_type_name=_configured_optional_env(
+                    "OF_DEVICE_HARDWARE_CPU_TYPE_NAME", previous_state.hardware_cpu_type_name
+                ),
+                hardware_model=_configured_optional_env(
+                    "OF_DEVICE_HARDWARE_MODEL", previous_state.hardware_model
+                ),
+                os_version=_configured_optional_env(
+                    "OF_DEVICE_OS_VERSION", previous_state.os_version
+                ),
+                os_version_number=_configured_optional_env(
+                    "OF_DEVICE_OS_VERSION_NUMBER", previous_state.os_version_number
+                ),
+                encrypted=encrypted,
+                bundle_fingerprint=bundle_fingerprint,
+            )
+
+        client_id = _configured_client_id()
+        current = datetime.now(UTC)
+        device_name = _configured_device_name()
+        host_id = _configured_host_id()
+        document = create_client_state_document(
+            client_identifier=client_id,
+            tail_identifiers=(accepted_tail,),
+            template=template,
+            now=current,
+            device_name=device_name,
+            host_id=host_id,
+            registration_date=current,
+        )
+        document = dataclasses.replace(
+            document,
+            host_id=host_id,
+            name=device_name,
+            hardware_cpu_count=os.environ.get("OF_DEVICE_HARDWARE_CPU_COUNT"),
+            hardware_cpu_type=os.environ.get("OF_DEVICE_HARDWARE_CPU_TYPE"),
+            hardware_cpu_type_name=os.environ.get("OF_DEVICE_HARDWARE_CPU_TYPE_NAME"),
+            hardware_model=os.environ.get("OF_DEVICE_HARDWARE_MODEL"),
+            os_version=os.environ.get("OF_DEVICE_OS_VERSION"),
+            os_version_number=os.environ.get("OF_DEVICE_OS_VERSION_NUMBER"),
+        )
+        return _WriterState(
+            client_id=document.client_identifier,
+            host_id=document.host_id,
+            device_name=document.name,
+            registration_date=document.registration_date,
+            tail_identifiers=document.tail_identifiers,
+            hardware_cpu_count=document.hardware_cpu_count,
+            hardware_cpu_type=document.hardware_cpu_type,
+            hardware_cpu_type_name=document.hardware_cpu_type_name,
+            hardware_model=document.hardware_model,
+            os_version=document.os_version,
+            os_version_number=document.os_version_number,
+            encrypted=encrypted,
+            bundle_fingerprint=bundle_fingerprint,
+        )
+
+    def _build_client_state_payload(
+        self,
+        writer_state: _WriterState,
+        transaction_filename: str,
+    ) -> tuple[str, bytes]:
+        """Return the updated ``.client`` filename and plist payload."""
+        timestamp_raw = transaction_filename.split("=", 1)[0]
+        current = datetime.strptime(timestamp_raw, "%Y%m%d%H%M%S").replace(tzinfo=UTC)
+        document = create_client_state_document(
+            client_identifier=writer_state.client_id,
+            tail_identifiers=writer_state.tail_identifiers,
+            now=current,
+            device_name=writer_state.device_name,
+            host_id=writer_state.host_id,
+            registration_date=writer_state.registration_date,
+        )
+        document = dataclasses.replace(
+            document,
+            hardware_cpu_count=writer_state.hardware_cpu_count,
+            hardware_cpu_type=writer_state.hardware_cpu_type,
+            hardware_cpu_type_name=writer_state.hardware_cpu_type_name,
+            hardware_model=writer_state.hardware_model,
+            os_version=writer_state.os_version,
+            os_version_number=writer_state.os_version_number,
+        )
+        return (
+            f"{timestamp_raw}={writer_state.client_id}.client",
+            serialise_client_state_plist(document),
+        )
+
+    def decrypt_transaction_contents_xml(
+        self,
+        *,
+        encrypted_plist_bytes: bytes,
+        file_bytes: bytes,
+    ) -> str:
+        """Return ``contents.xml`` from a plaintext or encrypted transaction ZIP."""
+        from io import BytesIO
+        from zipfile import ZipFile
+
+        if not is_encrypted(file_bytes):
+            plaintext = file_bytes
+        else:
+            if self._passphrase is None:
+                raise OFEncryptionError(
+                    "Bundle is encrypted but no passphrase is available. "
+                    "Set OF_ENCRYPTION_PASSPHRASE (or use the WebDAV password "
+                    "as a linked passphrase via OF_WEBDAV_PASS / URL-embedded credentials)."
+                )
+            from omnifocus.crypto.discovery import parse_file_header
+            from omnifocus.crypto.encryption import decrypt_file, load_document_keys
+
+            keys = load_document_keys(self._passphrase, encrypted_plist_bytes)
+            key_id, _ = parse_file_header(file_bytes)
+            if key_id not in keys:
+                raise OFEncryptionError(
+                    f"Key slot {key_id} not found in document keys "
+                    f"(available slots: {sorted(keys.keys())})"
+                )
+            plaintext = decrypt_file(file_bytes, *keys[key_id])
+
+        with ZipFile(BytesIO(plaintext)) as archive:
+            return archive.read("contents.xml").decode("utf-8")
 
     async def _load_document_keys(self) -> DocumentKeys:
         """Download the ``encrypted`` plist and derive document key slots.
@@ -550,24 +1017,67 @@ class OFocusStore:
         bundle_fingerprint: BundleFingerprint | None = None
         if (
             isinstance(fingerprint_raw, list)
-            and len(fingerprint_raw) == 2
+            and len(fingerprint_raw) == 3
             and isinstance(fingerprint_raw[0], str)
             and isinstance(fingerprint_raw[1], list)
+            and isinstance(fingerprint_raw[2], list)
         ):
             bundle_fingerprint = (
                 fingerprint_raw[0],
                 tuple(str(name) for name in fingerprint_raw[1]),
+                tuple(str(name) for name in fingerprint_raw[2]),
             )
         client_id = raw.get("client_id")
-        predecessor_id = raw.get("predecessor_id")
+        host_id = raw.get("host_id")
+        device_name = raw.get("device_name")
+        registration_date_raw = raw.get("registration_date")
+        tail_identifiers_raw = raw.get("tail_identifiers")
+        hardware_cpu_count = raw.get("hardware_cpu_count")
+        hardware_cpu_type = raw.get("hardware_cpu_type")
+        hardware_cpu_type_name = raw.get("hardware_cpu_type_name")
+        hardware_model = raw.get("hardware_model")
+        os_version = raw.get("os_version")
+        os_version_number = raw.get("os_version_number")
         encrypted = raw.get("encrypted")
-        if not isinstance(client_id, str) or not isinstance(predecessor_id, str):
+        if (
+            not isinstance(client_id, str)
+            or not isinstance(host_id, str)
+            or not isinstance(device_name, str)
+            or not isinstance(registration_date_raw, str)
+        ):
+            return None
+        for value in (
+            hardware_cpu_count,
+            hardware_cpu_type,
+            hardware_cpu_type_name,
+            hardware_model,
+            os_version,
+            os_version_number,
+        ):
+            if value is not None and not isinstance(value, str):
+                return None
+        if not isinstance(tail_identifiers_raw, list) or not all(
+            isinstance(item, str) for item in tail_identifiers_raw
+        ):
             return None
         if not isinstance(encrypted, bool):
             return None
+        try:
+            registration_date = datetime.fromisoformat(registration_date_raw)
+        except ValueError:
+            return None
         return _WriterState(
             client_id=client_id,
-            predecessor_id=predecessor_id,
+            host_id=host_id,
+            device_name=device_name,
+            registration_date=registration_date,
+            tail_identifiers=tuple(tail_identifiers_raw),
+            hardware_cpu_count=hardware_cpu_count,
+            hardware_cpu_type=hardware_cpu_type,
+            hardware_cpu_type_name=hardware_cpu_type_name,
+            hardware_model=hardware_model,
+            os_version=os_version,
+            os_version_number=os_version_number,
             encrypted=encrypted,
             bundle_fingerprint=bundle_fingerprint,
         )
@@ -577,10 +1087,23 @@ class OFocusStore:
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         payload: dict[str, Any] = {
             "client_id": state.client_id,
-            "predecessor_id": state.predecessor_id,
+            "host_id": state.host_id,
+            "device_name": state.device_name,
+            "registration_date": state.registration_date.isoformat(),
+            "tail_identifiers": list(state.tail_identifiers),
+            "hardware_cpu_count": state.hardware_cpu_count,
+            "hardware_cpu_type": state.hardware_cpu_type,
+            "hardware_cpu_type_name": state.hardware_cpu_type_name,
+            "hardware_model": state.hardware_model,
+            "os_version": state.os_version,
+            "os_version_number": state.os_version_number,
             "encrypted": state.encrypted,
             "bundle_fingerprint": (
-                [state.bundle_fingerprint[0], list(state.bundle_fingerprint[1])]
+                [
+                    state.bundle_fingerprint[0],
+                    list(state.bundle_fingerprint[1]),
+                    list(state.bundle_fingerprint[2]),
+                ]
                 if state.bundle_fingerprint is not None
                 else None
             ),
@@ -611,5 +1134,52 @@ def _webdav_password_from_env() -> str:
 
 def _bundle_fingerprint(filenames: list[str]) -> BundleFingerprint:
     """Return a deterministic fingerprint for the current remote bundle listing."""
-    baseline_name, tx_names = classify_bundle_files(filenames)
-    return baseline_name, tuple(tx_names)
+    state = build_bundle_state(filenames)
+    return (
+        state.baseline.filename,
+        tuple(delta.filename for delta in state.deltas),
+        tuple(client.filename for client in state.clients),
+    )
+
+
+def _configured_client_id(current: str | None = None) -> str:
+    """Return the configured or current sync client identifier."""
+    return os.environ.get("OF_CLIENT_ID") or current or generate_id()
+
+
+def _configured_device_name(current: str | None = None) -> str:
+    """Return the configured or current device name."""
+    return os.environ.get("OF_DEVICE_NAME") or current or default_device_name()
+
+
+def _configured_host_id(current: str | None = None) -> str:
+    """Return the configured or current device host identifier."""
+    return os.environ.get("OF_DEVICE_HOST_ID") or current or default_host_id()
+
+
+def _configured_optional_env(name: str, current: str | None) -> str | None:
+    """Return an optional environment override or keep the current value."""
+    return os.environ.get(name) or current
+
+
+def _writer_context_os_name() -> str | None:
+    """Return the OS name to embed in transaction XML."""
+    return os.environ.get("OF_DEVICE_OS_NAME", "macOS")
+
+
+def _configured_write_strategy() -> WriteStrategy:
+    """Return the experimental write strategy for task creation chains."""
+    value = os.environ.get("OF_WRITE_STRATEGY", "client_after_each_delta")
+    if value not in {"chain_then_client", "client_after_each_delta"}:
+        raise OFError(
+            "Invalid OF_WRITE_STRATEGY. Use 'chain_then_client' or 'client_after_each_delta'."
+        )
+    return value
+
+
+def _configured_chain_shape() -> ChainShape:
+    """Return the experimental chain shape for task creation deltas."""
+    value = os.environ.get("OF_CHAIN_SHAPE", "app_rebase")
+    if value not in {"linear", "app_rebase"}:
+        raise OFError("Invalid OF_CHAIN_SHAPE. Use 'linear' or 'app_rebase'.")
+    return value

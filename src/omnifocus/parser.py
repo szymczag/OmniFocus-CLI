@@ -285,6 +285,16 @@ def _build_project(el: ET.Element) -> Project | None:
         note=_text(el, "note"),
         completed=_parse_dt_utc(_text(el, "completed")),
         tag_ids=tag_ids,
+        repetition_rule=_text(el, "repetition-rule") or None,
+        repetition_method=_text(el, "repetition-method") or None,
+        repetition_schedule_type=_text(el, "repetition-schedule-type") or None,
+        repetition_anchor_date=_text(el, "repetition-anchor-date") or None,
+        catch_up_automatically=_bool(el, "catch-up-automatically"),
+        next_clone_identifier=_int(el, "next-clone-identifier", 0) or 0,
+        due_date_alarm_policy=_text(el, "due-date-alarm-policy") or None,
+        defer_date_alarm_policy=_text(el, "defer-date-alarm-policy") or None,
+        latest_time_to_start_alarm_policy=_text(el, "latest-time-to-start-alarm-policy") or None,
+        planned_date_alarm_policy=_text(el, "planned-date-alarm-policy") or None,
     )
 
 
@@ -325,6 +335,15 @@ def _build_task(el: ET.Element, project_id: str | None) -> Task | None:
         added=_parse_dt_utc(_text(el, "added")) or _EPOCH,
         modified=_parse_dt_utc(_text(el, "modified")) or _EPOCH,
         order=_text(el, "order") or "parallel",
+        repetition_method=_text(el, "repetition-method") or None,
+        repetition_schedule_type=_text(el, "repetition-schedule-type") or None,
+        repetition_anchor_date=_text(el, "repetition-anchor-date") or None,
+        catch_up_automatically=_bool(el, "catch-up-automatically"),
+        next_clone_identifier=_int(el, "next-clone-identifier", 0) or 0,
+        due_date_alarm_policy=_text(el, "due-date-alarm-policy") or None,
+        defer_date_alarm_policy=_text(el, "defer-date-alarm-policy") or None,
+        latest_time_to_start_alarm_policy=_text(el, "latest-time-to-start-alarm-policy") or None,
+        planned_date_alarm_policy=_text(el, "planned-date-alarm-policy") or None,
     )
 
 

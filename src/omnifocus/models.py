@@ -93,6 +93,16 @@ class Project:
     note: str
     completed: datetime | None
     tag_ids: tuple[str, ...] = field(default_factory=tuple)
+    repetition_rule: str | None = None
+    repetition_method: str | None = None
+    repetition_schedule_type: str | None = None
+    repetition_anchor_date: str | None = None
+    catch_up_automatically: bool = False
+    next_clone_identifier: int = 0
+    due_date_alarm_policy: str | None = None
+    defer_date_alarm_policy: str | None = None
+    latest_time_to_start_alarm_policy: str | None = None
+    planned_date_alarm_policy: str | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +151,15 @@ class Task:
     added: datetime = field(default_factory=lambda: datetime.utcnow())
     modified: datetime = field(default_factory=lambda: datetime.utcnow())
     order: str = "parallel"
+    repetition_method: str | None = None
+    repetition_schedule_type: str | None = None
+    repetition_anchor_date: str | None = None
+    catch_up_automatically: bool = False
+    next_clone_identifier: int = 0
+    due_date_alarm_policy: str | None = None
+    defer_date_alarm_policy: str | None = None
+    latest_time_to_start_alarm_policy: str | None = None
+    planned_date_alarm_policy: str | None = None
 
 
 @dataclass

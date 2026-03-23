@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -155,6 +157,9 @@ def _mock_store(model: OFModel | None = None) -> MagicMock:
     m.update_task = AsyncMock(
         return_value={"status": "updated", "task_id": "t1", "name": "Write tests"}
     )
+    m.drop_task = AsyncMock(
+        return_value={"status": "dropped", "task_id": "t1", "name": "Write tests"}
+    )
     m.add_project = AsyncMock(
         return_value={"status": "created", "project_id": "new-project", "name": "Project"}
     )
@@ -164,7 +169,41 @@ def _mock_store(model: OFModel | None = None) -> MagicMock:
     m.complete_project = AsyncMock(
         return_value={"status": "completed", "project_id": "p1", "name": "Engineering"}
     )
+    m.drop_project = AsyncMock(
+        return_value={"status": "dropped", "project_id": "p1", "name": "Engineering"}
+    )
     m.invalidate_cache = MagicMock()
+    m.sync_status = AsyncMock(
+        return_value={
+            "cache_valid": True,
+            "registered_client": True,
+            "client_id": "omnifocus-cli-air",
+            "host_id": "ED325E58-F612-4653-BD34-7006A7D6DD52",
+            "current_tail_identifier": "tail123",
+            "advertised_tail_identifiers": ["tail123"],
+        }
+    )
+    m.bundle_state = AsyncMock(
+        return_value={
+            "baseline": {"filename": "00000000000000=base+tail.zip", "tail_id": "tail123"},
+            "deltas": [{"filename": "20260322154011=head+tail.zip"}],
+            "clients": [{"filename": "20260322154012=client.client", "client_id": "client"}],
+        }
+    )
+    m.fetch_file = AsyncMock(return_value=b"payload")
+    m.fetch_latest_deltas = AsyncMock(
+        return_value=[
+            ("20260322154011=head+tail.zip", b"zip-a"),
+            ("20260322154012=head2+head.zip", b"zip-b"),
+        ]
+    )
+    m.fetch_latest_client = AsyncMock(return_value=("20260322154012=client.client", b"<plist/>"))
+    m.decrypt_latest_delta = AsyncMock(
+        return_value=("20260322154011=head+tail.zip", '<?xml version="1.0"?><omnifocus/>')
+    )
+    m.decrypt_transaction_contents_xml = MagicMock(
+        return_value='<?xml version="1.0"?><omnifocus></omnifocus>'
+    )
     m._client = MagicMock()
     m._client.put_file = AsyncMock(return_value=None)
     return m
@@ -199,6 +238,221 @@ class TestSyncCmd:
         mock.load = AsyncMock(side_effect=OFEncryptionError("bad passphrase"))
         with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
             result = runner.invoke(cli, ["sync"])
+        assert result.exit_code != 0
+        assert "Encryption" in result.output
+
+    def test_sync_status_success(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["sync-status"])
+        assert result.exit_code == 0
+        assert '"cache_valid": true' in result.output
+
+    def test_bundle_state_success(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["bundle-state"])
+        assert result.exit_code == 0
+        assert '"baseline"' in result.output
+
+    def test_fetch_file_success(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with runner.isolated_filesystem():
+            with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+                result = runner.invoke(cli, ["fetch-file", "encrypted", "--out", "encrypted.plist"])
+            assert result.exit_code == 0
+            assert Path("encrypted.plist").read_bytes() == b"payload"
+
+    def test_fetch_latest_deltas_success(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with runner.isolated_filesystem():
+            with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+                result = runner.invoke(cli, ["fetch-latest-deltas", "--count", "2"])
+            assert result.exit_code == 0
+            assert Path("20260322154011=head+tail.zip").read_bytes() == b"zip-a"
+            assert Path("20260322154012=head2+head.zip").read_bytes() == b"zip-b"
+
+    def test_fetch_latest_client_success(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with runner.isolated_filesystem():
+            with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+                result = runner.invoke(cli, ["fetch-latest-client", "--client-id", "client"])
+            assert result.exit_code == 0
+            assert Path("20260322154012=client.client").read_bytes() == b"<plist/>"
+
+    def test_decrypt_latest_delta_success(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["decrypt-latest-delta", "--client-id", "client"])
+        assert result.exit_code == 0
+        assert "20260322154011=head+tail.zip" in result.output
+        assert "<omnifocus/>" in result.output
+
+    def test_sync_status_webdav_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.sync_status = AsyncMock(side_effect=OFWebDAVError("timeout"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["sync-status"])
+        assert result.exit_code != 0
+        assert "WebDAV" in result.output
+
+    def test_sync_status_encryption_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.sync_status = AsyncMock(side_effect=OFEncryptionError("bad passphrase"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["sync-status"])
+        assert result.exit_code != 0
+        assert "Encryption" in result.output
+
+    def test_sync_status_of_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.sync_status = AsyncMock(side_effect=OFError("bad state"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["sync-status"])
+        assert result.exit_code != 0
+        assert "bad state" in result.output
+
+    def test_bundle_state_encryption_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.bundle_state = AsyncMock(side_effect=OFEncryptionError("bad passphrase"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["bundle-state"])
+        assert result.exit_code != 0
+        assert "Encryption" in result.output
+
+    def test_bundle_state_webdav_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.bundle_state = AsyncMock(side_effect=OFWebDAVError("timeout"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["bundle-state"])
+        assert result.exit_code != 0
+        assert "WebDAV" in result.output
+
+    def test_bundle_state_of_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.bundle_state = AsyncMock(side_effect=OFError("bad bundle"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["bundle-state"])
+        assert result.exit_code != 0
+        assert "bad bundle" in result.output
+
+    def test_fetch_file_of_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.fetch_file = AsyncMock(side_effect=OFError("missing"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["fetch-file", "encrypted", "--out", "encrypted.plist"])
+        assert result.exit_code != 0
+        assert "missing" in result.output
+
+    def test_fetch_file_webdav_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.fetch_file = AsyncMock(side_effect=OFWebDAVError("timeout"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["fetch-file", "encrypted", "--out", "encrypted.plist"])
+        assert result.exit_code != 0
+        assert "WebDAV" in result.output
+
+    def test_fetch_file_encryption_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.fetch_file = AsyncMock(side_effect=OFEncryptionError("bad passphrase"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["fetch-file", "encrypted", "--out", "encrypted.plist"])
+        assert result.exit_code != 0
+        assert "Encryption" in result.output
+
+    def test_fetch_latest_deltas_webdav_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.fetch_latest_deltas = AsyncMock(side_effect=OFWebDAVError("timeout"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["fetch-latest-deltas"])
+        assert result.exit_code != 0
+        assert "WebDAV" in result.output
+
+    def test_fetch_latest_deltas_encryption_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.fetch_latest_deltas = AsyncMock(side_effect=OFEncryptionError("bad passphrase"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["fetch-latest-deltas"])
+        assert result.exit_code != 0
+        assert "Encryption" in result.output
+
+    def test_fetch_latest_deltas_of_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.fetch_latest_deltas = AsyncMock(side_effect=OFError("bad delta"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["fetch-latest-deltas"])
+        assert result.exit_code != 0
+        assert "bad delta" in result.output
+
+    def test_fetch_latest_client_webdav_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.fetch_latest_client = AsyncMock(side_effect=OFWebDAVError("timeout"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["fetch-latest-client"])
+        assert result.exit_code != 0
+        assert "WebDAV" in result.output
+
+    def test_fetch_latest_client_encryption_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.fetch_latest_client = AsyncMock(side_effect=OFEncryptionError("bad passphrase"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["fetch-latest-client"])
+        assert result.exit_code != 0
+        assert "Encryption" in result.output
+
+    def test_fetch_latest_client_of_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.fetch_latest_client = AsyncMock(side_effect=OFError("bad client"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["fetch-latest-client"])
+        assert result.exit_code != 0
+        assert "bad client" in result.output
+
+    def test_decrypt_latest_delta_of_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.decrypt_latest_delta = AsyncMock(side_effect=OFError("missing delta"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["decrypt-latest-delta"])
+        assert result.exit_code != 0
+        assert "missing delta" in result.output
+
+    def test_decrypt_latest_delta_webdav_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.decrypt_latest_delta = AsyncMock(side_effect=OFWebDAVError("timeout"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["decrypt-latest-delta"])
+        assert result.exit_code != 0
+        assert "WebDAV" in result.output
+
+    def test_decrypt_latest_delta_encryption_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.decrypt_latest_delta = AsyncMock(side_effect=OFEncryptionError("bad passphrase"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["decrypt-latest-delta"])
         assert result.exit_code != 0
         assert "Encryption" in result.output
 
@@ -465,6 +719,112 @@ class TestDoneCmd:
 
 
 # ---------------------------------------------------------------------------
+# of task-*
+# ---------------------------------------------------------------------------
+
+
+class TestTaskUpdateCmd:
+    def test_task_update(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli,
+                ["task-update", "Write tests", "--note", "updated", "--flagged"],
+            )
+        assert result.exit_code == 0
+        assert "Updated task" in result.output
+        updated_task = mock.update_task.await_args.args[0]
+        assert updated_task.note == "updated"
+        assert updated_task.flagged is True
+
+    def test_task_update_clears_due_defer_estimate_and_tags(self) -> None:
+        model = _make_model()
+        model.tasks["t1"] = dataclasses.replace(
+            model.tasks["t1"],
+            due=datetime(2026, 4, 1, 19, 0, 0),
+            start=datetime(2026, 4, 2, 19, 0, 0),
+            estimated_minutes=45,
+            tag_ids=("tag1", "tag2"),
+        )
+        runner = CliRunner()
+        mock = _mock_store(model)
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli,
+                [
+                    "task-update",
+                    "Write tests",
+                    "--clear-due",
+                    "--clear-defer",
+                    "--clear-estimate",
+                    "--clear-tags",
+                ],
+            )
+        assert result.exit_code == 0
+        updated_task = mock.update_task.await_args.args[0]
+        assert updated_task.due is None
+        assert updated_task.start is None
+        assert updated_task.estimated_minutes is None
+        assert updated_task.tag_ids == ()
+
+    def test_task_update_webdav_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.update_task = AsyncMock(side_effect=OFWebDAVError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["task-update", "Write tests", "--note", "updated"])
+        assert result.exit_code != 0
+        assert "WebDAV" in result.output
+
+    def test_task_update_store_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.update_task = AsyncMock(side_effect=OFError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["task-update", "Write tests", "--note", "updated"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
+
+
+class TestTaskDropCmd:
+    def test_task_drop(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["task-drop", "Write tests", "--yes"])
+        assert result.exit_code == 0
+        assert "Dropped" in result.output
+        mock.drop_task.assert_awaited_once()
+
+    def test_task_drop_confirms(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["task-drop", "Write tests"], input="y\n")
+        assert result.exit_code == 0
+        mock.drop_task.assert_awaited_once()
+
+    def test_task_drop_webdav_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.drop_task = AsyncMock(side_effect=OFWebDAVError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["task-drop", "Write tests", "--yes"])
+        assert result.exit_code != 0
+        assert "WebDAV" in result.output
+
+    def test_task_drop_store_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.drop_task = AsyncMock(side_effect=OFError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["task-drop", "Write tests", "--yes"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
+
+
+# ---------------------------------------------------------------------------
 # of project-*
 # ---------------------------------------------------------------------------
 
@@ -569,9 +929,18 @@ class TestProjectWriteCmds:
         with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
             result = runner.invoke(cli, ["project-update", "Engineering", "--status", "done"])
         assert result.exit_code == 0
-        updated_project = mock.update_project.await_args.args[0]
+        updated_project = mock.complete_project.await_args.args[0]
         assert updated_project.status == "done"
         assert updated_project.completed is not None
+
+    def test_project_update_sets_dropped_status(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-update", "Engineering", "--status", "dropped"])
+        assert result.exit_code == 0
+        updated_project = mock.drop_project.await_args.args[0]
+        assert updated_project.status == "dropped"
 
     def test_project_update_ambiguous_match(self) -> None:
         model = _make_model()
@@ -691,6 +1060,105 @@ class TestProjectsCmd:
         with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
             result = runner.invoke(cli, ["projects", "--status", "inactive"])
         assert result.exit_code == 0
+
+
+class TestDecryptDeltaCmd:
+    def test_decrypt_delta_prints_contents_xml(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        delta_file = tmp_path / "delta.zip"
+        plist_file = tmp_path / "encrypted.plist"
+        delta_file.write_bytes(b"delta")
+        plist_file.write_bytes(b"plist")
+
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli,
+                [
+                    "decrypt-delta",
+                    str(delta_file),
+                    "--encrypted-plist",
+                    str(plist_file),
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert "<omnifocus" in result.output
+        mock.decrypt_transaction_contents_xml.assert_called_once_with(
+            encrypted_plist_bytes=b"plist",
+            file_bytes=b"delta",
+        )
+
+    def test_decrypt_delta_surfaces_encryption_errors(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.decrypt_transaction_contents_xml = MagicMock(
+            side_effect=OFEncryptionError("wrong passphrase")
+        )
+        delta_file = tmp_path / "delta.zip"
+        plist_file = tmp_path / "encrypted.plist"
+        delta_file.write_bytes(b"delta")
+        plist_file.write_bytes(b"plist")
+
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli,
+                [
+                    "decrypt-delta",
+                    str(delta_file),
+                    "--encrypted-plist",
+                    str(plist_file),
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "wrong passphrase" in result.output
+
+    def test_decrypt_delta_surfaces_webdav_errors(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.decrypt_transaction_contents_xml = MagicMock(side_effect=OFWebDAVError("boom"))
+        delta_file = tmp_path / "delta.zip"
+        plist_file = tmp_path / "encrypted.plist"
+        delta_file.write_bytes(b"delta")
+        plist_file.write_bytes(b"plist")
+
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli,
+                [
+                    "decrypt-delta",
+                    str(delta_file),
+                    "--encrypted-plist",
+                    str(plist_file),
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "WebDAV error" in result.output
+
+    def test_decrypt_delta_surfaces_store_errors(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.decrypt_transaction_contents_xml = MagicMock(side_effect=OFError("boom"))
+        delta_file = tmp_path / "delta.zip"
+        plist_file = tmp_path / "encrypted.plist"
+        delta_file.write_bytes(b"delta")
+        plist_file.write_bytes(b"plist")
+
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli,
+                [
+                    "decrypt-delta",
+                    str(delta_file),
+                    "--encrypted-plist",
+                    str(plist_file),
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "boom" in result.output
 
 
 # ---------------------------------------------------------------------------

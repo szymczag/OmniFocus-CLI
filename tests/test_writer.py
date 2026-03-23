@@ -9,8 +9,13 @@ from datetime import UTC, datetime
 
 from omnifocus.models import Project, Task
 from omnifocus.writer import (
+    AddProjectPlan,
+    AddTaskPlan,
     TaskWriter,
     TransactionBuilder,
+    WritePlan,
+    WriterContext,
+    _default_task_rank,
     _format_dt_local,
     _format_dt_utc,
     _format_ts,
@@ -51,7 +56,7 @@ class TestGenerateId:
 
 class TestTimestampFormatting:
     def test_format_ts(self) -> None:
-        assert _format_ts(NOW) == "20260322T154011"
+        assert _format_ts(NOW) == "20260322154011"
 
     def test_format_dt_utc(self) -> None:
         result = _format_dt_utc(NOW)
@@ -61,6 +66,12 @@ class TestTimestampFormatting:
         local = datetime(2026, 6, 1, 19, 0, 0)
         result = _format_dt_local(local)
         assert result == "2026-06-01T19:00:00.000"
+
+    def test_default_task_rank_for_inbox_uses_app_like_range(self) -> None:
+        assert _default_task_rank(NOW, inbox=True) == 2147482994
+
+    def test_default_task_rank_for_non_inbox_keeps_timestamp_shape(self) -> None:
+        assert _default_task_rank(NOW, inbox=False) == int(NOW.timestamp() * 1000) & 0x7FFFFFFF
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +90,21 @@ class TestTransactionBuilder:
         root = ET.fromstring(xml)  # noqa: S314
         assert root.tag == f"{NS}omnifocus"
         assert list(root) == []
+
+    def test_root_includes_writer_context_metadata(self) -> None:
+        builder = TransactionBuilder(
+            context=WriterContext(
+                os_name="macOS",
+                os_version="26.3.1",
+                machine_model="Mac16,12",
+            )
+        )
+        root = _parse_transaction(builder.to_xml_bytes())
+        assert root.get("app-id") == "com.omnigroup.OmniFocus4"
+        assert root.get("app-version") == "185.9.1"
+        assert root.get("os-name") == "macOS"
+        assert root.get("os-version") == "26.3.1"
+        assert root.get("machine-model") == "Mac16,12"
 
     def test_add_task_element(self) -> None:
         builder = TransactionBuilder()
@@ -265,6 +291,74 @@ class TestTransactionBuilder:
         hidden_el = task_el.find(f"{NS}hidden")
         assert hidden_el is not None and hidden_el.text is not None
 
+    def test_planned_dt_in_xml(self) -> None:
+        builder = TransactionBuilder()
+        planned = datetime(2026, 6, 1, 19, 0, 0)
+        builder._elements.append(
+            builder._task_element(
+                task_id="x",
+                op=None,
+                name="Planned",
+                parent_task_id=None,
+                inbox=True,
+                flagged=False,
+                rank=1,
+                added_dt=NOW,
+                modified_dt=NOW,
+                due_dt=None,
+                start_dt=None,
+                planned_dt=planned,
+                completed_dt=None,
+                note="",
+                order="parallel",
+                estimated_minutes=None,
+                repetition_rule=None,
+                hidden_dt=None,
+                project_xml="<project/>",
+                tag_ids=(),
+                include_snapshot_defaults=False,
+            )
+        )
+        root = _parse_transaction(builder.to_xml_bytes())
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        planned_el = task_el.find(f"{NS}planned")
+        assert planned_el is not None and planned_el.text == "2026-06-01T19:00:00.000"
+
+    def test_task_element_can_omit_added_and_modified(self) -> None:
+        builder = TransactionBuilder()
+        builder._elements.append(
+            builder._task_element(
+                task_id="x",
+                op="update",
+                name=None,
+                parent_task_id=None,
+                inbox=None,
+                flagged=None,
+                rank=None,
+                added_dt=None,
+                modified_dt=None,
+                due_dt=None,
+                start_dt=None,
+                planned_dt=None,
+                completed_dt=None,
+                note=None,
+                order=None,
+                estimated_minutes=None,
+                repetition_rule=None,
+                hidden_dt=None,
+                project_xml=None,
+                tag_ids=(),
+                include_snapshot_defaults=False,
+            )
+        )
+        root = _parse_transaction(builder.to_xml_bytes())
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        assert task_el.find(f"{NS}added") is None
+        assert task_el.find(f"{NS}modified") is None
+        assert task_el.find(f"{NS}name") is None
+
     def test_multiple_tasks_in_transaction(self) -> None:
         builder = TransactionBuilder()
         for i in range(3):
@@ -346,6 +440,137 @@ class TestTransactionBuilder:
         contexts = task_el.findall(f"{NS}context")
         assert [context.get("idref") for context in contexts] == ["tagA"]
 
+    def test_add_task_snapshot_matches_app_like_shape(self) -> None:
+        builder = TransactionBuilder()
+        builder.add_task_snapshot(
+            task_id="abc123",
+            parent_task_id=None,
+            inbox=True,
+            flagged=False,
+            rank=1000,
+            added_dt=NOW,
+        )
+        root = _parse_transaction(builder.to_xml_bytes())
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        assert task_el.find(f"{NS}modified") is None
+        assert task_el.find(f"{NS}name").text is None
+        assert task_el.find(f"{NS}project") is not None
+        assert task_el.find(f"{NS}task") is not None
+        assert task_el.find(f"{NS}context") is not None
+        assert task_el.find(f"{NS}planned") is not None
+        assert task_el.find(f"{NS}completed-by-children").text == "false"
+        assert task_el.find(f"{NS}repetition-method") is not None
+        assert task_el.find(f"{NS}next-clone-identifier").text == "0"
+        assert task_el.find(f"{NS}order").text == "sequential"
+
+    def test_add_task_snapshot_field_order_matches_app_capture(self) -> None:
+        builder = TransactionBuilder()
+        builder.add_task_snapshot(
+            task_id="abc123",
+            parent_task_id=None,
+            inbox=True,
+            flagged=False,
+            rank=1000,
+            added_dt=NOW,
+        )
+        root = _parse_transaction(builder.to_xml_bytes())
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        assert [child.tag.removeprefix(NS) for child in list(task_el[:10])] == [
+            "project",
+            "inbox",
+            "task",
+            "added",
+            "name",
+            "note",
+            "rank",
+            "hidden",
+            "context",
+            "start",
+        ]
+
+    def test_update_task_fields_renders_minimal_update_payload(self) -> None:
+        builder = TransactionBuilder()
+        builder.update_task_fields(
+            task_id="abc123",
+            added_dt=NOW,
+            modified_dt=NOW,
+            name="APP_SMOKE_1",
+        )
+        root = _parse_transaction(builder.to_xml_bytes())
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        assert task_el.get("op") == "update"
+        assert task_el.find(f"{NS}name").text == "APP_SMOKE_1"
+        assert task_el.find(f"{NS}flagged") is None
+        assert task_el.find(f"{NS}project") is None
+
+    def test_add_delete_snapshot_renders_delete_snapshot_payload(self) -> None:
+        task = Task(
+            id="task-delete",
+            name="Delete me",
+            parent_task_id=None,
+            project_id=None,
+            inbox=True,
+            completed=None,
+            flagged=False,
+            due=None,
+            start=None,
+            hidden=None,
+            note="",
+            rank=12,
+            repetition_rule=None,
+            estimated_minutes=None,
+            added=NOW,
+            modified=NOW,
+        )
+        builder = TransactionBuilder()
+        builder.add_delete_snapshot(task)
+        root = _parse_transaction(builder.to_xml_bytes())
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        assert task_el.get("op") == "delete"
+        snapshot = task_el.find(f"{NS}delete-snapshot")
+        assert snapshot is not None
+        assert snapshot.find(f"{NS}inbox").text == "true"
+        assert snapshot.find(f"{NS}name").text is None
+
+    def test_add_task_renders_non_snapshot_repeat_and_alarm_fields(self) -> None:
+        builder = TransactionBuilder()
+        builder.add_task(
+            task_id="repeat1",
+            name="Repeated",
+            parent_task_id=None,
+            inbox=True,
+            flagged=False,
+            rank=1,
+            added_dt=NOW,
+            modified_dt=NOW,
+            repetition_rule="FREQ=DAILY",
+            repetition_method="fixed",
+            repetition_schedule_type="start-after-completion",
+            repetition_anchor_date="2026-03-22",
+            catch_up_automatically=True,
+            next_clone_identifier=3,
+            due_date_alarm_policy="policy-due",
+            defer_date_alarm_policy="policy-defer",
+            latest_time_to_start_alarm_policy="policy-latest",
+            planned_date_alarm_policy="policy-planned",
+        )
+        root = _parse_transaction(builder.to_xml_bytes())
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        assert task_el.find(f"{NS}repetition-method").text == "fixed"
+        assert task_el.find(f"{NS}repetition-schedule-type").text == "start-after-completion"
+        assert task_el.find(f"{NS}repetition-anchor-date").text == "2026-03-22"
+        assert task_el.find(f"{NS}catch-up-automatically").text == "true"
+        assert task_el.find(f"{NS}next-clone-identifier").text == "3"
+        assert task_el.find(f"{NS}due-date-alarm-policy").text == "policy-due"
+        assert task_el.find(f"{NS}defer-date-alarm-policy").text == "policy-defer"
+        assert task_el.find(f"{NS}latest-time-to-start-alarm-policy").text == "policy-latest"
+        assert task_el.find(f"{NS}planned-date-alarm-policy").text == "policy-planned"
+
 
 # ---------------------------------------------------------------------------
 # TaskWriter
@@ -358,47 +583,136 @@ def _unzip_contents(zip_bytes: bytes) -> str:
 
 
 class TestTaskWriter:
-    def test_add_task_returns_tuple(self) -> None:
-        writer = TaskWriter(client_id="cli01", parent_id="parent01")
-        fname, data, new_id = writer.add_task("Test task")
-        assert fname.endswith(".zip")
-        assert b"PK" == data[:2]
-        assert len(new_id) >= 10
+    def test_empty_plan_iter_compatibility(self) -> None:
+        assert tuple(iter(WritePlan(deltas=()))) == ()
+        assert tuple(iter(AddTaskPlan(task_id="task1", deltas=()))) == (None, None, "task1")
+        assert tuple(iter(AddProjectPlan(project_id="proj1", deltas=()))) == (
+            None,
+            None,
+            "proj1",
+        )
 
-    def test_add_task_filename_format(self) -> None:
-        writer = TaskWriter(client_id="cli01", parent_id="parent01")
-        fname, _, _ = writer.add_task("Test task")
-        # Format: 20260322T154011=cli01+parent01.zip
-        assert "=cli01+parent01.zip" in fname
-        # Timestamp part must be numeric-ish
-        ts_part = fname.split("=")[0]
-        assert len(ts_part) == 15 and not ts_part.endswith("Z")
+    def test_add_task_plan_iter_compatibility(self) -> None:
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        filename, data, task_id = tuple(writer.add_task("Compat task"))
+        assert filename is not None
+        assert data is not None
+        assert task_id is not None
 
-    def test_add_task_xml_has_task_element(self) -> None:
-        writer = TaskWriter(client_id="cli01", parent_id="parent01")
-        fname, data, new_id = writer.add_task("Buy bread", inbox=True, task_id="fixed123")
-        xml = _unzip_contents(data)
-        root = ET.fromstring(xml)  # noqa: S314
-        task_el = root.find(f"{NS}task")
-        assert task_el is not None
-        assert task_el.get("id") == "fixed123"
-        name_el = task_el.find(f"{NS}name")
-        assert name_el is not None and name_el.text == "Buy bread"
+    def test_add_task_returns_multi_delta_plan(self) -> None:
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        plan = writer.add_task("Test task")
+        assert isinstance(plan, AddTaskPlan)
+        assert len(plan.deltas) >= 2
+        assert len(plan.task_id) >= 10
+        assert all(delta.filename.endswith(".zip") for delta in plan.deltas)
+        assert all(delta.data[:2] == b"PK" for delta in plan.deltas)
+
+    def test_add_task_uses_parent_chaining_between_deltas(self) -> None:
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        plan = writer.add_task("Test task", chain_shape="linear")
+        assert plan.deltas[0].parent_tail_id == "tail00"
+        assert plan.deltas[1].parent_tail_id == plan.deltas[0].head_id
+        assert plan.deltas[0].event_time < plan.deltas[1].event_time
+        assert plan.deltas[-1].refresh_client_after is True
+
+    def test_add_task_with_client_after_each_delta_marks_all_refreshes(self) -> None:
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        plan = writer.add_task("Test task", write_strategy="client_after_each_delta")
+        assert all(delta.refresh_client_after for delta in plan.deltas)
+
+    def test_add_task_defaults_to_app_rebase(self) -> None:
+        writer = TaskWriter(head_id="tail01", parent_tail_id="accepted-tail")
+        plan = writer.add_task("Test task")
+        assert plan.deltas[0].head_id == "accepted-tail"
+
+    def test_add_task_with_app_rebase_reuses_accepted_tail_as_first_head(self) -> None:
+        writer = TaskWriter(head_id="tail01", parent_tail_id="accepted-tail")
+        plan = writer.add_task("Test task", chain_shape="app_rebase")
+        assert plan.deltas[0].head_id == "accepted-tail"
+        assert plan.deltas[1].head_id == plan.deltas[0].parent_tail_id
+        assert plan.deltas[1].parent_tail_id != "accepted-tail"
+
+    def test_add_task_xml_has_skeleton_then_name_update(self) -> None:
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        plan = writer.add_task("Buy bread", inbox=True, task_id="fixed123", chain_shape="linear")
+        skeleton = ET.fromstring(_unzip_contents(plan.deltas[0].data))  # noqa: S314
+        update = ET.fromstring(_unzip_contents(plan.deltas[1].data))  # noqa: S314
+        skeleton_task = skeleton.find(f"{NS}task")
+        update_task = update.find(f"{NS}task")
+        assert skeleton_task is not None
+        assert update_task is not None
+        assert skeleton_task.get("id") == "fixed123"
+        assert skeleton_task.find(f"{NS}modified") is None
+        assert skeleton_task.find(f"{NS}name").text is None
+        assert skeleton_task.find(f"{NS}order").text == "sequential"
+        assert update_task.get("op") == "update"
+        assert update_task.find(f"{NS}name").text == "Buy bread"
+
+    def test_add_task_appends_extra_update_deltas_for_optional_fields(self) -> None:
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        plan = writer.add_task(
+            "Buy bread",
+            note="Some note",
+            flagged=True,
+            due_dt=datetime(2026, 6, 1, 19, 0, 0),
+            start_dt=datetime(2026, 5, 1, 19, 0, 0),
+            estimated_minutes=45,
+            chain_shape="linear",
+        )
+        assert len(plan.deltas) == 5
+
+        note_xml = ET.fromstring(_unzip_contents(plan.deltas[2].data))  # noqa: S314
+        note_task = note_xml.find(f"{NS}task")
+        assert note_task is not None
+        assert note_task.get("op") == "update"
+        assert note_task.find(f"{NS}note").text == "Some note"
+
+        flagged_xml = ET.fromstring(_unzip_contents(plan.deltas[3].data))  # noqa: S314
+        flagged_task = flagged_xml.find(f"{NS}task")
+        assert flagged_task is not None
+        assert flagged_task.find(f"{NS}flagged").text == "true"
+
+        extra_xml = ET.fromstring(_unzip_contents(plan.deltas[4].data))  # noqa: S314
+        extra_task = extra_xml.find(f"{NS}task")
+        assert extra_task is not None
+        assert extra_task.find(f"{NS}due").text == "2026-06-01T19:00:00.000"
+        assert extra_task.find(f"{NS}start").text == "2026-05-01T19:00:00.000"
+        assert extra_task.find(f"{NS}estimated-minutes").text == "45"
+
+    def test_add_task_app_rebase_relinks_optional_update_deltas(self) -> None:
+        writer = TaskWriter(head_id="tail01", parent_tail_id="accepted-tail")
+        plan = writer.add_task(
+            "Buy bread",
+            note="Some note",
+            flagged=True,
+            due_dt=datetime(2026, 6, 1, 19, 0, 0),
+            start_dt=datetime(2026, 5, 1, 19, 0, 0),
+            estimated_minutes=45,
+            chain_shape="app_rebase",
+        )
+        assert len(plan.deltas) == 5
+        assert plan.deltas[2].head_id == plan.deltas[1].parent_tail_id
+        assert plan.deltas[2].parent_tail_id != plan.deltas[2].head_id
+        assert plan.deltas[3].head_id == plan.deltas[2].parent_tail_id
+        assert plan.deltas[4].head_id == plan.deltas[3].parent_tail_id
 
     def test_add_task_with_project_parent(self) -> None:
-        writer = TaskWriter(client_id="cli01", parent_id="p1")
-        fname, data, _ = writer.add_task(
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        plan = writer.add_task(
             "Sub task",
             parent_task_id="proj_abc",
             inbox=False,
+            chain_shape="linear",
         )
-        xml = _unzip_contents(data)
+        xml = _unzip_contents(plan.deltas[0].data)
         root = ET.fromstring(xml)  # noqa: S314
         task_el = root.find(f"{NS}task")
         assert task_el is not None
         parent_ref = task_el.find(f"{NS}task")
         assert parent_ref is not None
         assert parent_ref.get("idref") == "proj_abc"
+        assert task_el.find(f"{NS}order").text == "parallel"
 
     def test_complete_task(self) -> None:
         task = Task(
@@ -419,7 +733,7 @@ class TestTaskWriter:
             added=NOW,
             modified=NOW,
         )
-        writer = TaskWriter(client_id="cli01", parent_id="p1")
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
         fname, data = writer.complete_task(task)
         xml = _unzip_contents(data)
         root = ET.fromstring(xml)  # noqa: S314
@@ -448,28 +762,56 @@ class TestTaskWriter:
             added=NOW,
             modified=NOW,
         )
-        writer = TaskWriter(client_id="myid", parent_id="myid")
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
         fname, _ = writer.complete_task(task)
-        assert "=myid+myid.zip" in fname
+        assert fname.endswith(".zip")
+        assert "=tail00+" in fname
 
-    def test_default_client_id_generated(self) -> None:
+    def test_drop_task_marks_hidden(self) -> None:
+        task = Task(
+            id="drop1",
+            name="Drop me",
+            parent_task_id=None,
+            project_id=None,
+            inbox=True,
+            completed=None,
+            flagged=False,
+            due=None,
+            start=None,
+            hidden=None,
+            note="",
+            rank=1,
+            repetition_rule=None,
+            estimated_minutes=None,
+            added=NOW,
+            modified=NOW,
+        )
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        _, data = writer.drop_task(task)
+        root = ET.fromstring(_unzip_contents(data))  # noqa: S314
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        assert task_el.find(f"{NS}hidden") is not None
+
+    def test_default_head_id_generated(self) -> None:
         writer = TaskWriter()
-        assert len(writer._client_id) >= 10
+        assert len(writer._head_id) >= 10
 
     def test_add_project_returns_tuple(self) -> None:
-        writer = TaskWriter(client_id="cli01", parent_id="parent01")
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
         fname, data, project_id = writer.add_project("Launch")
         assert fname.endswith(".zip")
         assert b"PK" == data[:2]
         assert len(project_id) >= 10
 
     def test_add_project_filename_format(self) -> None:
-        writer = TaskWriter(client_id="cli01", parent_id="parent01")
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
         fname, _, _ = writer.add_project("Launch")
-        assert "=cli01+parent01.zip" in fname
+        assert fname.endswith(".zip")
+        assert "=tail00+" in fname
 
     def test_add_project_xml_has_project_payload(self) -> None:
-        writer = TaskWriter(client_id="cli01", parent_id="parent01")
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
         _, data, _ = writer.add_project(
             "Launch",
             project_id="proj-fixed",
@@ -503,7 +845,7 @@ class TestTaskWriter:
             completed=None,
             tag_ids=("tag1",),
         )
-        writer = TaskWriter(client_id="cli01", parent_id="parent01")
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
         _, data = writer.upsert_project(project, when=NOW)
         root = ET.fromstring(_unzip_contents(data))  # noqa: S314
         task_el = root.find(f"{NS}task")
@@ -532,7 +874,7 @@ class TestTaskWriter:
             note="",
             completed=None,
         )
-        writer = TaskWriter(client_id="cli01", parent_id="parent01")
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
         _, data = writer.complete_project(project)
         root = ET.fromstring(_unzip_contents(data))  # noqa: S314
         task_el = root.find(f"{NS}task")
@@ -543,6 +885,31 @@ class TestTaskWriter:
         completed_el = task_el.find(f"{NS}completed")
         assert completed_el is not None
         assert completed_el.text is not None and completed_el.text.endswith("Z")
+
+    def test_drop_project_sets_dropped_status(self) -> None:
+        project = Project(
+            id="p1",
+            name="Engineering",
+            folder_id="f1",
+            status="active",
+            singleton=False,
+            rank=200,
+            added=NOW,
+            modified=NOW,
+            flagged=False,
+            due=None,
+            start=None,
+            note="",
+            completed=None,
+        )
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
+        _, data = writer.drop_project(project)
+        root = ET.fromstring(_unzip_contents(data))  # noqa: S314
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        project_el = task_el.find(f"{NS}project")
+        assert project_el is not None
+        assert project_el.find(f"{NS}status").text == "dropped"
 
     def test_upsert_task_includes_tag_contexts(self) -> None:
         task = Task(
@@ -564,7 +931,7 @@ class TestTaskWriter:
             added=NOW,
             modified=NOW,
         )
-        writer = TaskWriter(client_id="cli01", parent_id="parent01")
+        writer = TaskWriter(head_id="tail01", parent_tail_id="tail00")
         _, data = writer.upsert_task(task, when=NOW)
         root = ET.fromstring(_unzip_contents(data))  # noqa: S314
         task_el = root.find(f"{NS}task")
@@ -573,6 +940,6 @@ class TestTaskWriter:
         assert [context.get("idref") for context in contexts] == ["tag1", "tag2"]
 
     def test_writer_uses_explicit_parent_without_guessing(self) -> None:
-        writer = TaskWriter(client_id="cli01", parent_id="remote-head-123")
-        fname, _, _ = writer.add_task("Test task")
-        assert "=cli01+remote-head-123.zip" in fname
+        writer = TaskWriter(head_id="new-tail-123", parent_tail_id="remote-tail-123")
+        plan = writer.add_task("Test task")
+        assert plan.deltas[0].head_id == "remote-tail-123"

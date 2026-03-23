@@ -3,10 +3,17 @@
 Provides the ``of`` command group with subcommands:
 
 - ``of sync``      — pull the latest bundle from WebDAV
+- ``of sync-status`` — show cache and tail diagnostics
+- ``of bundle-state`` — show parsed baseline/delta/client refs
 - ``of tasks``     — list tasks with filters
 - ``of add``       — add a task
 - ``of done``      — mark a task complete
 - ``of projects``  — show the folder/project tree
+- ``of fetch-file`` — download a raw bundle file
+- ``of fetch-latest-deltas`` — download recent delta ZIPs
+- ``of fetch-latest-client`` — download the newest client plist
+- ``of decrypt-latest-delta`` — decrypt the newest remote delta
+- ``of decrypt-delta`` — decrypt a transaction ZIP and print ``contents.xml``
 
 All WebDAV credentials and the encryption passphrase are read from
 environment variables (see :mod:`omnifocus.store`).
@@ -15,10 +22,12 @@ environment variables (see :mod:`omnifocus.store`).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import click
 
@@ -232,6 +241,150 @@ def sync_cmd() -> None:
     _run(_sync())
 
 
+@cli.command("sync-status")
+def sync_status_cmd() -> None:
+    """Show sync/cache/debug status."""
+
+    async def _run_sync_status() -> None:
+        try:
+            async with OFocusStore.from_env() as store:
+                click.echo(json.dumps(await store.sync_status(), indent=2, sort_keys=True))
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFEncryptionError as exc:
+            raise click.ClickException(f"Encryption error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    _run(_run_sync_status())
+
+
+@cli.command("bundle-state")
+def bundle_state_cmd() -> None:
+    """Show parsed bundle refs and inferred tail state."""
+
+    async def _run_bundle_state() -> None:
+        try:
+            async with OFocusStore.from_env() as store:
+                click.echo(json.dumps(await store.bundle_state(), indent=2, sort_keys=True))
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFEncryptionError as exc:
+            raise click.ClickException(f"Encryption error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    _run(_run_bundle_state())
+
+
+@cli.command("fetch-file")
+@click.argument("name")
+@click.option(
+    "--out",
+    "out_path",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=str),
+    help="Output path for the downloaded file.",
+)
+def fetch_file_cmd(name: str, out_path: str) -> None:
+    """Download a raw file from the bundle."""
+
+    async def _run_fetch_file() -> None:
+        try:
+            async with OFocusStore.from_env() as store:
+                data = await store.fetch_file(name)
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFEncryptionError as exc:
+            raise click.ClickException(f"Encryption error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+        Path(out_path).write_bytes(data)
+        click.echo(out_path)
+
+    _run(_run_fetch_file())
+
+
+@cli.command("fetch-latest-deltas")
+@click.option("--count", default=1, show_default=True, type=int)
+@click.option(
+    "--out-dir",
+    default=".",
+    show_default=True,
+    type=click.Path(file_okay=False, path_type=str),
+)
+def fetch_latest_deltas_cmd(count: int, out_dir: str) -> None:
+    """Download the newest delta ZIPs into a directory."""
+
+    async def _run_fetch_latest_deltas() -> None:
+        try:
+            async with OFocusStore.from_env() as store:
+                deltas = await store.fetch_latest_deltas(count=count)
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFEncryptionError as exc:
+            raise click.ClickException(f"Encryption error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+        target_dir = Path(out_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for filename, payload in deltas:
+            (target_dir / filename).write_bytes(payload)
+            click.echo(str(target_dir / filename))
+
+    _run(_run_fetch_latest_deltas())
+
+
+@cli.command("fetch-latest-client")
+@click.option("--client-id", default=None, metavar="ID")
+@click.option(
+    "--out",
+    "out_path",
+    default=None,
+    type=click.Path(dir_okay=False, path_type=str),
+    help="Output path; defaults to the remote filename in the current directory.",
+)
+def fetch_latest_client_cmd(client_id: str | None, out_path: str | None) -> None:
+    """Download the newest client state file."""
+
+    async def _run_fetch_latest_client() -> None:
+        try:
+            async with OFocusStore.from_env() as store:
+                filename, payload = await store.fetch_latest_client(client_id=client_id)
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFEncryptionError as exc:
+            raise click.ClickException(f"Encryption error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+        destination = Path(out_path) if out_path is not None else Path(filename)
+        destination.write_bytes(payload)
+        click.echo(str(destination))
+
+    _run(_run_fetch_latest_client())
+
+
+@cli.command("decrypt-latest-delta")
+@click.option("--client-id", default=None, metavar="ID")
+def decrypt_latest_delta_cmd(client_id: str | None) -> None:
+    """Decrypt and print the newest delta ZIP."""
+
+    async def _run_decrypt_latest_delta() -> None:
+        try:
+            async with OFocusStore.from_env() as store:
+                filename, contents_xml = await store.decrypt_latest_delta(client_id=client_id)
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFEncryptionError as exc:
+            raise click.ClickException(f"Encryption error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"# {filename}")
+        click.echo(contents_xml)
+
+    _run(_run_decrypt_latest_delta())
+
+
 # ---------------------------------------------------------------------------
 # of tasks
 # ---------------------------------------------------------------------------
@@ -400,6 +553,113 @@ def done_cmd(query: str, yes: bool) -> None:
     _run(_run_done())
 
 
+@cli.command("task-update")
+@click.argument("query")
+@click.option("--name", "new_name", default=None, metavar="NAME")
+@click.option("--note", default=None, metavar="TEXT")
+@click.option("--flagged/--unflagged", default=None)
+@click.option("--due", "due_str", default=None, metavar="DATE")
+@click.option("--clear-due", is_flag=True)
+@click.option("--defer", "defer_str", default=None, metavar="DATE")
+@click.option("--clear-defer", is_flag=True)
+@click.option("--estimate", "estimate_minutes", default=None, type=int)
+@click.option("--clear-estimate", is_flag=True)
+@click.option("--tag-id", "tag_ids", multiple=True)
+@click.option("--clear-tags", is_flag=True)
+def task_update_cmd(
+    query: str,
+    new_name: str | None,
+    note: str | None,
+    flagged: bool | None,
+    due_str: str | None,
+    clear_due: bool,
+    defer_str: str | None,
+    clear_defer: bool,
+    estimate_minutes: int | None,
+    clear_estimate: bool,
+    tag_ids: tuple[str, ...],
+    clear_tags: bool,
+) -> None:
+    """Update an existing task."""
+
+    async def _run_task_update() -> None:
+        model = await _get_model()
+        task = _match_task(model, query)
+        due_dt = None if clear_due else (_parse_due(due_str) if due_str else task.due)
+        defer_dt = None if clear_defer else (_parse_due(defer_str) if defer_str else task.start)
+        estimated = (
+            None
+            if clear_estimate
+            else (estimate_minutes if estimate_minutes is not None else task.estimated_minutes)
+        )
+        now = datetime.now(UTC)
+        updated = Task(
+            id=task.id,
+            name=new_name or task.name,
+            parent_task_id=task.parent_task_id,
+            project_id=task.project_id,
+            inbox=task.inbox,
+            completed=task.completed,
+            flagged=task.flagged if flagged is None else flagged,
+            due=due_dt,
+            start=defer_dt,
+            hidden=task.hidden,
+            note=task.note if note is None else note,
+            rank=task.rank,
+            repetition_rule=task.repetition_rule,
+            estimated_minutes=estimated,
+            tag_ids=() if clear_tags else (tag_ids if tag_ids else task.tag_ids),
+            added=task.added,
+            modified=now,
+            order=task.order,
+            repetition_method=task.repetition_method,
+            repetition_schedule_type=task.repetition_schedule_type,
+            repetition_anchor_date=task.repetition_anchor_date,
+            catch_up_automatically=task.catch_up_automatically,
+            next_clone_identifier=task.next_clone_identifier,
+            due_date_alarm_policy=task.due_date_alarm_policy,
+            defer_date_alarm_policy=task.defer_date_alarm_policy,
+            latest_time_to_start_alarm_policy=task.latest_time_to_start_alarm_policy,
+            planned_date_alarm_policy=task.planned_date_alarm_policy,
+        )
+        try:
+            async with OFocusStore.from_env() as store:
+                await store.update_task(updated)
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Updated task: {updated.name!r}")
+
+    _run(_run_task_update())
+
+
+@cli.command("task-drop")
+@click.argument("query")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+def task_drop_cmd(query: str, yes: bool) -> None:
+    """Mark a task as dropped/hidden."""
+
+    async def _run_task_drop() -> None:
+        model = await _get_model()
+        task = _match_task(model, query)
+
+        if not yes:
+            click.confirm(f"Drop task: {task.name!r}?", abort=True)
+
+        try:
+            async with OFocusStore.from_env() as store:
+                await store.drop_task(task)
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        click.echo(f"Dropped: {task.name!r}")
+
+    _run(_run_task_drop())
+
+
 # ---------------------------------------------------------------------------
 # of projects
 # ---------------------------------------------------------------------------
@@ -485,6 +745,8 @@ def project_add_cmd(
 @click.option("--clear-due", is_flag=True)
 @click.option("--defer", "defer_str", default=None, metavar="DATE")
 @click.option("--clear-defer", is_flag=True)
+@click.option("--tag-id", "tag_ids", multiple=True)
+@click.option("--clear-tags", is_flag=True)
 @click.option(
     "--status",
     type=click.Choice(["active", "inactive", "done", "dropped"]),
@@ -499,6 +761,8 @@ def project_update_cmd(
     clear_due: bool,
     defer_str: str | None,
     clear_defer: bool,
+    tag_ids: tuple[str, ...],
+    clear_tags: bool,
     status: str | None,
 ) -> None:
     """Update an existing project."""
@@ -525,11 +789,26 @@ def project_update_cmd(
             completed=(
                 now if status == "done" and project.completed is None else project.completed
             ),
-            tag_ids=project.tag_ids,
+            tag_ids=() if clear_tags else (tag_ids if tag_ids else project.tag_ids),
+            repetition_rule=project.repetition_rule,
+            repetition_method=project.repetition_method,
+            repetition_schedule_type=project.repetition_schedule_type,
+            repetition_anchor_date=project.repetition_anchor_date,
+            catch_up_automatically=project.catch_up_automatically,
+            next_clone_identifier=project.next_clone_identifier,
+            due_date_alarm_policy=project.due_date_alarm_policy,
+            defer_date_alarm_policy=project.defer_date_alarm_policy,
+            latest_time_to_start_alarm_policy=project.latest_time_to_start_alarm_policy,
+            planned_date_alarm_policy=project.planned_date_alarm_policy,
         )
         try:
             async with OFocusStore.from_env() as store:
-                await store.update_project(updated)
+                if status == "done":
+                    await store.complete_project(updated)
+                elif status == "dropped":
+                    await store.drop_project(updated)
+                else:
+                    await store.update_project(updated)
         except OFWebDAVError as exc:
             raise click.ClickException(f"WebDAV error: {exc}") from exc
         except OFError as exc:
@@ -560,3 +839,32 @@ def project_done_cmd(query: str, yes: bool) -> None:
         click.echo(f"Completed project: {project.name!r}")
 
     _run(_run_project_done())
+
+
+@cli.command("decrypt-delta")
+@click.argument("delta_file", type=click.Path(exists=True, dir_okay=False, path_type=str))
+@click.option(
+    "--encrypted-plist",
+    "encrypted_plist_path",
+    default="encrypted.plist",
+    show_default=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=str),
+    help="Path to the bundle 'encrypted' plist file.",
+)
+def decrypt_delta_cmd(delta_file: str, encrypted_plist_path: str) -> None:
+    """Decrypt a transaction ZIP and print its ``contents.xml``."""
+
+    try:
+        store = OFocusStore.from_env()
+        contents_xml = store.decrypt_transaction_contents_xml(
+            encrypted_plist_bytes=Path(encrypted_plist_path).read_bytes(),
+            file_bytes=Path(delta_file).read_bytes(),
+        )
+    except OFWebDAVError as exc:
+        raise click.ClickException(f"WebDAV error: {exc}") from exc
+    except OFEncryptionError as exc:
+        raise click.ClickException(f"Encryption error: {exc}") from exc
+    except OFError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(contents_xml)

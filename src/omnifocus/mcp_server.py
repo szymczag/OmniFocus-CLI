@@ -10,7 +10,7 @@ Tools
 ``get_task``        Retrieve a single task by id.
 ``add_task``        Create a new task.
 ``complete_task``   Mark a task as completed.
-``update_task``     Update name, due date, flagged, or note on a task.
+``update_task``     Update task fields and state.
 ``add_project``     Create a new project.
 ``update_project``  Update a project.
 ``complete_project`` Mark a project completed.
@@ -56,7 +56,7 @@ from mcp.types import TextContent, Tool
 
 from omnifocus.errors import OFError
 from omnifocus.fuzzy import find_tasks
-from omnifocus.models import OFModel, Project, Task
+from omnifocus.models import OFModel, Task
 from omnifocus.store import OFocusStore
 
 # ---------------------------------------------------------------------------
@@ -192,15 +192,29 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="update_task",
-            description="Update a task's name, due date, flagged status, or note.",
+            description="Update a task's fields or mark it dropped.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
                     "name": {"type": "string"},
                     "due": {"type": "string", "description": "ISO 8601 datetime or empty to clear"},
+                    "defer": {
+                        "type": "string",
+                        "description": "ISO 8601 datetime or empty to clear",
+                    },
                     "flagged": {"type": "boolean"},
                     "note": {"type": "string"},
+                    "estimate": {
+                        "type": ["integer", "string"],
+                        "description": "Estimated minutes or empty to clear",
+                    },
+                    "tag_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Replace tag IDs on the task",
+                    },
+                    "dropped": {"type": "boolean"},
                 },
                 "required": ["task_id"],
             },
@@ -422,19 +436,44 @@ async def _handle_update_task(args: dict[str, Any]) -> list[TextContent]:
     if task is None:
         return _text({"error": f"Task not found: {task_id}"})
 
-    # Build updated task by replacing changed fields
-    now = datetime.now(UTC).replace(tzinfo=None)
+    now = datetime.now(UTC)
+    estimate_value = task.estimated_minutes
+    if "estimate" in args:
+        raw_estimate = args["estimate"]
+        if raw_estimate in ("", None):
+            estimate_value = None
+        else:
+            try:
+                estimate_value = int(raw_estimate)
+            except (TypeError, ValueError):
+                return _text({"error": f"Invalid estimate: {raw_estimate!r}"})
+
+    hidden_value = task.hidden
+    if args.get("dropped") is True:
+        hidden_value = now
+    elif "dropped" in args and args.get("dropped") is False:
+        hidden_value = None
+
     updated = dataclasses.replace(
         task,
         name=str(args["name"]) if "name" in args else task.name,
         flagged=bool(args["flagged"]) if "flagged" in args else task.flagged,
         note=str(args["note"]) if "note" in args else task.note,
         due=_parse_optional_date(str(args["due"])) if "due" in args else task.due,
+        start=_parse_optional_date(str(args["defer"])) if "defer" in args else task.start,
+        estimated_minutes=estimate_value,
+        tag_ids=(
+            tuple(str(tag_id) for tag_id in args["tag_ids"]) if "tag_ids" in args else task.tag_ids
+        ),
+        hidden=hidden_value,
         modified=now,
     )
 
     async with OFocusStore.from_env() as store:
-        result = await store.update_task(updated)
+        if args.get("dropped") is True:
+            result = await store.drop_task(updated)
+        else:
+            result = await store.update_task(updated)
 
     return _text(result)
 
@@ -496,27 +535,27 @@ async def _handle_update_project(args: dict[str, Any]) -> list[TextContent]:
     if project is None:
         return _text({"error": f"Project not found: {project_id}"})
 
-    updated = Project(
-        id=project.id,
+    updated = dataclasses.replace(
+        project,
         name=str(args["name"]) if "name" in args else project.name,
-        folder_id=project.folder_id,
         status=str(args["status"]) if "status" in args else project.status,
-        singleton=project.singleton,
-        rank=project.rank,
-        added=project.added,
         modified=datetime.now(UTC),
         flagged=bool(args["flagged"]) if "flagged" in args else project.flagged,
         due=_parse_optional_date(str(args["due"])) if "due" in args else project.due,
         start=_parse_optional_date(str(args["defer"])) if "defer" in args else project.start,
         note=str(args["note"]) if "note" in args else project.note,
-        completed=project.completed,
-        tag_ids=project.tag_ids,
     )
     if "status" in args and args["status"] == "done" and updated.completed is None:
         updated = dataclasses.replace(updated, completed=datetime.now(UTC))
 
     async with OFocusStore.from_env() as store:
-        result = await store.update_project(updated)
+        status = str(args["status"]) if "status" in args else updated.status
+        if status == "done":
+            result = await store.complete_project(updated)
+        elif status == "dropped":
+            result = await store.drop_project(updated)
+        else:
+            result = await store.update_project(updated)
 
     return _text(result)
 

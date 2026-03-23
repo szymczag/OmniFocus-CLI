@@ -117,6 +117,9 @@ def _mock_store(model: OFModel | None = None) -> MagicMock:
     m.update_task = AsyncMock(
         return_value={"status": "updated", "task_id": "t1", "name": "Write tests"}
     )
+    m.drop_task = AsyncMock(
+        return_value={"status": "dropped", "task_id": "t1", "name": "Write tests"}
+    )
     m.add_project = AsyncMock(
         return_value={
             "status": "created",
@@ -130,6 +133,13 @@ def _mock_store(model: OFModel | None = None) -> MagicMock:
     m.complete_project = AsyncMock(
         return_value={
             "status": "completed",
+            "project_id": "p1",
+            "name": "Engineering",
+        }
+    )
+    m.drop_project = AsyncMock(
+        return_value={
+            "status": "dropped",
             "project_id": "p1",
             "name": "Engineering",
         }
@@ -510,6 +520,59 @@ class TestHandleUpdateTask:
         data = _parse_response(result)
         assert data["status"] == "updated"
 
+    @pytest.mark.asyncio
+    async def test_update_defer_estimate_and_drop(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_task(
+                    {
+                        "task_id": "t1",
+                        "defer": "2099-12-30T19:00:00",
+                        "estimate": 15,
+                        "dropped": True,
+                    }
+                )
+        data = _parse_response(result)
+        assert data["status"] == "dropped"
+        dropped_task = mock.drop_task.await_args.args[0]
+        assert dropped_task.start == datetime(2099, 12, 30, 19, 0, 0)
+        assert dropped_task.estimated_minutes == 15
+        assert dropped_task.hidden is not None
+
+    @pytest.mark.asyncio
+    async def test_update_invalid_estimate_returns_error(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_update_task({"task_id": "t1", "estimate": "abc"})
+        data = _parse_response(result)
+        assert data["error"] == "Invalid estimate: 'abc'"
+
+    @pytest.mark.asyncio
+    async def test_update_empty_estimate_clears_estimate(self) -> None:
+        model = _make_model()
+        model.tasks["t1"] = dataclasses.replace(model.tasks["t1"], estimated_minutes=30)
+        mock = _mock_store(model)
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_task({"task_id": "t1", "estimate": ""})
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        updated_task = mock.update_task.await_args.args[0]
+        assert updated_task.estimated_minutes is None
+
+    @pytest.mark.asyncio
+    async def test_update_dropped_false_clears_hidden(self) -> None:
+        model = _make_model()
+        model.tasks["t1"] = dataclasses.replace(model.tasks["t1"], hidden=NOW)
+        mock = _mock_store(model)
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_task({"task_id": "t1", "dropped": False})
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        updated_task = mock.update_task.await_args.args[0]
+        assert updated_task.hidden is None
+
 
 # ---------------------------------------------------------------------------
 # project write tools
@@ -597,9 +660,20 @@ class TestHandleUpdateProject:
         with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
             with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
                 await _handle_update_project({"project_id": "p1", "status": "done"})
-        updated_project = mock.update_project.await_args.args[0]
+        updated_project = mock.complete_project.await_args.args[0]
         assert updated_project.status == "done"
         assert updated_project.completed is not None
+
+    @pytest.mark.asyncio
+    async def test_update_project_dropped_routes_to_drop(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_project({"project_id": "p1", "status": "dropped"})
+        data = _parse_response(result)
+        assert data["status"] == "dropped"
+        dropped_project = mock.drop_project.await_args.args[0]
+        assert dropped_project.status == "dropped"
 
 
 class TestHandleCompleteProject:

@@ -10,7 +10,7 @@ exposed in exception messages.
 Usage::
 
     async with WebDAVClient.from_env() as client:
-        files = await client.list_bundle()
+        files = await client.list_entries()
         data = await client.get_file(files[0])
 """
 
@@ -42,7 +42,7 @@ class WebDAVClient:
     """Async WebDAV client scoped to a single ``.ofocus`` bundle directory.
 
     Args:
-        base_url: Full URL to the directory containing ``.zip`` files,
+        base_url: Full URL to the directory containing bundle files,
             e.g. ``https://dav.example.com/omnifocus/OmniFocus.ofocus/``.
             A trailing slash is required.
         username: WebDAV Basic Auth username.
@@ -138,12 +138,12 @@ class WebDAVClient:
     # Core operations
     # ------------------------------------------------------------------
 
-    async def list_bundle(self) -> list[str]:
-        """List all ``.zip`` files in the bundle directory via PROPFIND.
+    async def list_entries(self) -> list[str]:
+        """List all files in the bundle directory via PROPFIND.
 
         Returns:
-            List of relative filenames (e.g. ``["00000000=abc.zip", "20260322=x.zip"]``),
-            sorted lexicographically (chronological order for transaction ZIPs).
+            List of relative filenames (for example ``["00000000=abc.zip", "20260322=x.client"]``),
+            sorted lexicographically.
 
         Raises:
             OFWebDAVError: On HTTP error or parse failure.
@@ -173,10 +173,16 @@ class WebDAVClient:
                 continue
             href = href_el.text.rstrip("/")
             filename = href.rsplit("/", 1)[-1]
-            if filename.endswith(".zip"):
+            if not filename or filename.endswith(".ofocus") or filename == "data":
+                continue
+            if "." in filename:
                 filenames.append(filename)
 
         return sorted(filenames)
+
+    async def list_bundle(self) -> list[str]:
+        """List all bundle ZIPs in the bundle directory via PROPFIND."""
+        return [filename for filename in await self.list_entries() if filename.endswith(".zip")]
 
     async def get_file(self, filename: str) -> bytes:
         """Download a file from the bundle directory.
@@ -197,19 +203,19 @@ class WebDAVClient:
         """Upload a file to the bundle directory.
 
         Args:
-            filename: Relative filename for the new transaction ZIP.
-            data: Raw bytes to upload (ZIP archive, possibly encrypted).
+            filename: Relative filename for the uploaded bundle file.
+            data: Raw bytes to upload.
 
         Raises:
             OFWebDAVError: On HTTP error.
         """
         url = self._base_url + filename
-        await self._request(
-            "PUT",
-            url,
-            headers={"Content-Type": "application/zip"},
-            content=data,
-        )
+        content_type = "application/octet-stream"
+        if filename.endswith(".zip"):
+            content_type = "application/zip"
+        elif filename.endswith(".client"):
+            content_type = "application/xml"
+        await self._request("PUT", url, headers={"Content-Type": content_type}, content=data)
 
     # ------------------------------------------------------------------
     # Internal helpers
