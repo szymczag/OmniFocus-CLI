@@ -45,15 +45,16 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
-from datetime import datetime, timezone
-from typing import Any
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from typing import Any, cast
 
+import click
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from omnifocus.errors import OFError
-from omnifocus.formatting import _json_default
 from omnifocus.fuzzy import find_tasks
 from omnifocus.models import OFModel, Project, Task
 from omnifocus.store import OFocusStore
@@ -85,7 +86,12 @@ def _serialise(obj: Any) -> Any:
 
 def _text(data: Any) -> list[TextContent]:
     """Wrap any JSON-serialisable data as a list of MCP TextContent."""
-    return [TextContent(type="text", text=json.dumps(_serialise(data), ensure_ascii=False, indent=2))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(_serialise(data), ensure_ascii=False, indent=2),
+        )
+    ]
 
 
 async def _load_model(force: bool = False) -> OFModel:
@@ -109,7 +115,7 @@ def _parse_optional_date(value: str | None) -> datetime | None:
 # ---------------------------------------------------------------------------
 
 
-@server.list_tools()
+@server.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
 async def list_tools() -> list[Tool]:
     """Return the list of all MCP tools provided by this server."""
     return [
@@ -163,7 +169,10 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "name": {"type": "string", "description": "Task name"},
                     "project": {"type": "string", "description": "Project name (substring)"},
-                    "due": {"type": "string", "description": "Due date ISO 8601 or natural (today/tomorrow/mon-sun)"},
+                    "due": {
+                        "type": "string",
+                        "description": "Due date ISO 8601 or natural (today/tomorrow/mon-sun)",
+                    },
                     "flagged": {"type": "boolean"},
                     "note": {"type": "string"},
                 },
@@ -222,7 +231,10 @@ async def list_tools() -> list[Tool]:
                     "project_id": {"type": "string"},
                     "name": {"type": "string"},
                     "due": {"type": "string", "description": "ISO 8601 datetime or empty to clear"},
-                    "defer": {"type": "string", "description": "ISO 8601 datetime or empty to clear"},
+                    "defer": {
+                        "type": "string",
+                        "description": "ISO 8601 datetime or empty to clear",
+                    },
                     "flagged": {"type": "boolean"},
                     "note": {"type": "string"},
                     "status": {"type": "string", "enum": ["active", "inactive", "done", "dropped"]},
@@ -278,7 +290,7 @@ async def list_tools() -> list[Tool]:
 # ---------------------------------------------------------------------------
 
 
-@server.call_tool()
+@server.call_tool()  # type: ignore[untyped-decorator]
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Dispatch incoming tool calls to the appropriate handler."""
     handlers: dict[str, Any] = {
@@ -300,7 +312,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     if handler is None:
         return _text({"error": f"Unknown tool: {name}"})
     try:
-        return await handler(arguments)
+        typed_handler = cast(Callable[[dict[str, Any]], Awaitable[list[TextContent]]], handler)
+        return await typed_handler(arguments)
     except OFError as exc:
         return _text({"error": str(exc)})
 
@@ -321,10 +334,7 @@ async def _handle_list_tasks(args: dict[str, Any]) -> list[TextContent]:
         tasks = [t for t in tasks if t.due is not None]
     if args.get("project"):
         needle = args["project"].lower()
-        matching = {
-            pid for pid, p in model.projects.items()
-            if needle in p.name.lower()
-        }
+        matching = {pid for pid, p in model.projects.items() if needle in p.name.lower()}
         tasks = [t for t in tasks if t.project_id in matching]
 
     return _text([_task_summary(t, model) for t in tasks[:limit]])
@@ -335,10 +345,7 @@ async def _handle_search_tasks(args: dict[str, Any]) -> list[TextContent]:
     limit = int(args.get("limit", 10))
     model = await _load_model()
     results = find_tasks(query, model.active_tasks, limit=limit)
-    return _text([
-        {"score": round(r.score, 3), **_task_summary(r.task, model)}
-        for r in results
-    ])
+    return _text([{"score": round(r.score, 3), **_task_summary(r.task, model)} for r in results])
 
 
 async def _handle_get_task(args: dict[str, Any]) -> list[TextContent]:
@@ -352,7 +359,6 @@ async def _handle_get_task(args: dict[str, Any]) -> list[TextContent]:
 
 async def _handle_add_task(args: dict[str, Any]) -> list[TextContent]:
     from omnifocus.cli import _parse_due
-    import click
 
     name = str(args.get("name", ""))
     if not name:
@@ -365,8 +371,7 @@ async def _handle_add_task(args: dict[str, Any]) -> list[TextContent]:
     if args.get("project"):
         needle = str(args["project"]).lower()
         matches = [
-            p for p in model.projects.values()
-            if needle in p.name.lower() and p.status == "active"
+            p for p in model.projects.values() if needle in p.name.lower() and p.status == "active"
         ]
         if not matches:
             return _text({"error": f"No active project matching {args['project']!r}"})
@@ -418,7 +423,7 @@ async def _handle_update_task(args: dict[str, Any]) -> list[TextContent]:
         return _text({"error": f"Task not found: {task_id}"})
 
     # Build updated task by replacing changed fields
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     updated = dataclasses.replace(
         task,
         name=str(args["name"]) if "name" in args else task.name,
@@ -436,7 +441,6 @@ async def _handle_update_task(args: dict[str, Any]) -> list[TextContent]:
 
 async def _handle_add_project(args: dict[str, Any]) -> list[TextContent]:
     from omnifocus.cli import _parse_due
-    import click
 
     name = str(args.get("name", ""))
     if not name:
@@ -500,7 +504,7 @@ async def _handle_update_project(args: dict[str, Any]) -> list[TextContent]:
         singleton=project.singleton,
         rank=project.rank,
         added=project.added,
-        modified=datetime.now(timezone.utc),
+        modified=datetime.now(UTC),
         flagged=bool(args["flagged"]) if "flagged" in args else project.flagged,
         due=_parse_optional_date(str(args["due"])) if "due" in args else project.due,
         start=_parse_optional_date(str(args["defer"])) if "defer" in args else project.start,
@@ -509,7 +513,7 @@ async def _handle_update_project(args: dict[str, Any]) -> list[TextContent]:
         tag_ids=project.tag_ids,
     )
     if "status" in args and args["status"] == "done" and updated.completed is None:
-        updated = dataclasses.replace(updated, completed=datetime.now(timezone.utc))
+        updated = dataclasses.replace(updated, completed=datetime.now(UTC))
 
     async with OFocusStore.from_env() as store:
         result = await store.update_project(updated)
@@ -523,7 +527,9 @@ async def _handle_complete_project(args: dict[str, Any]) -> list[TextContent]:
     project = model.projects.get(query)
     if project is None:
         needle = query.lower()
-        matches = [candidate for candidate in model.projects.values() if needle in candidate.name.lower()]
+        matches = [
+            candidate for candidate in model.projects.values() if needle in candidate.name.lower()
+        ]
         if not matches:
             return _text({"error": f"No project matching {query!r}"})
         if len(matches) > 1:
@@ -539,10 +545,7 @@ async def _handle_complete_project(args: dict[str, Any]) -> list[TextContent]:
 async def _handle_list_projects(args: dict[str, Any]) -> list[TextContent]:
     status = str(args.get("status", "active"))
     model = await _load_model()
-    projects = [
-        p for p in model.projects.values()
-        if status == "all" or p.status == status
-    ]
+    projects = [p for p in model.projects.values() if status == "all" or p.status == status]
     return _text([dataclasses.asdict(p) for p in projects])
 
 
@@ -554,12 +557,14 @@ async def _handle_list_folders(args: dict[str, Any]) -> list[TextContent]:
 async def _handle_sync_now(args: dict[str, Any]) -> list[TextContent]:
     async with OFocusStore.from_env() as store:
         model = await store.load(force_refresh=True)
-    return _text({
-        "status": "synced",
-        "tasks": len(model.tasks),
-        "projects": len(model.projects),
-        "folders": len(model.folders),
-    })
+    return _text(
+        {
+            "status": "synced",
+            "tasks": len(model.tasks),
+            "projects": len(model.projects),
+            "folders": len(model.folders),
+        }
+    )
 
 
 async def _handle_sync_status(args: dict[str, Any]) -> list[TextContent]:
@@ -588,31 +593,6 @@ def _task_summary(task: Task, model: OFModel) -> dict[str, Any]:
         "note": task.note,
         "tag_ids": list(task.tag_ids),
     }
-
-
-def _build_tx_for_task(task: Task) -> "TransactionBuilder":
-    """Build a transaction that upserts the given task element."""
-    from omnifocus.writer import TransactionBuilder
-    builder = TransactionBuilder()
-    builder.add_task(
-        task_id=task.id,
-        name=task.name,
-        parent_task_id=task.parent_task_id,
-        inbox=task.inbox,
-        flagged=task.flagged,
-        rank=task.rank,
-        added_dt=task.added,
-        modified_dt=task.modified,
-        due_dt=task.due,
-        start_dt=task.start,
-        completed_dt=task.completed,
-        note=task.note,
-        order=task.order,
-        estimated_minutes=task.estimated_minutes,
-        repetition_rule=task.repetition_rule,
-        hidden_dt=task.hidden,
-    )
-    return builder
 
 
 # ---------------------------------------------------------------------------

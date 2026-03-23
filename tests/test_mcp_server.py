@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from omnifocus.models import Folder, OFModel, Project, Task
 from omnifocus.mcp_server import (
+    _handle_add_project,
     _handle_add_task,
+    _handle_complete_project,
     _handle_complete_task,
     _handle_get_task,
     _handle_list_folders,
@@ -20,6 +21,7 @@ from omnifocus.mcp_server import (
     _handle_search_tasks,
     _handle_sync_now,
     _handle_sync_status,
+    _handle_update_project,
     _handle_update_task,
     _serialise,
     _task_summary,
@@ -27,8 +29,8 @@ from omnifocus.mcp_server import (
     call_tool,
     list_tools,
 )
+from omnifocus.models import Folder, OFModel, Project, Task
 
-UTC = timezone.utc
 NOW = datetime(2026, 3, 22, 12, 0, 0, tzinfo=UTC)
 
 
@@ -40,29 +42,63 @@ NOW = datetime(2026, 3, 22, 12, 0, 0, tzinfo=UTC)
 def _make_model() -> OFModel:
     model = OFModel()
     model.folders["f1"] = Folder(
-        id="f1", name="Work", parent_folder_id=None,
-        rank=100, added=NOW, modified=NOW,
+        id="f1",
+        name="Work",
+        parent_folder_id=None,
+        rank=100,
+        added=NOW,
+        modified=NOW,
     )
     model.projects["p1"] = Project(
-        id="p1", name="Engineering", folder_id="f1", status="active",
-        singleton=False, rank=100, added=NOW, modified=NOW,
-        flagged=False, due=None, start=None, note="", completed=None,
+        id="p1",
+        name="Engineering",
+        folder_id="f1",
+        status="active",
+        singleton=False,
+        rank=100,
+        added=NOW,
+        modified=NOW,
+        flagged=False,
+        due=None,
+        start=None,
+        note="",
+        completed=None,
     )
     model.tasks["t1"] = Task(
-        id="t1", name="Write tests", parent_task_id="p1", project_id="p1",
-        inbox=False, completed=None, flagged=True,
+        id="t1",
+        name="Write tests",
+        parent_task_id="p1",
+        project_id="p1",
+        inbox=False,
+        completed=None,
+        flagged=True,
         due=datetime(2026, 4, 1, 19, 0, 0),
-        start=None, hidden=None, note="Use pytest",
-        rank=100, repetition_rule=None, estimated_minutes=60,
-        added=NOW, modified=NOW,
+        start=None,
+        hidden=None,
+        note="Use pytest",
+        rank=100,
+        repetition_rule=None,
+        estimated_minutes=60,
+        added=NOW,
+        modified=NOW,
     )
     model.tasks["t2"] = Task(
-        id="t2", name="Buy milk", parent_task_id=None, project_id=None,
-        inbox=True, completed=None, flagged=False,
+        id="t2",
+        name="Buy milk",
+        parent_task_id=None,
+        project_id=None,
+        inbox=True,
+        completed=None,
+        flagged=False,
         due=datetime.today().replace(hour=19, minute=0, second=0, microsecond=0),
-        start=None, hidden=None, note="",
-        rank=200, repetition_rule=None, estimated_minutes=None,
-        added=NOW, modified=NOW,
+        start=None,
+        hidden=None,
+        note="",
+        rank=200,
+        repetition_rule=None,
+        estimated_minutes=None,
+        added=NOW,
+        modified=NOW,
     )
     return model
 
@@ -72,21 +108,48 @@ def _mock_store(model: OFModel | None = None) -> MagicMock:
     m.__aenter__ = AsyncMock(return_value=m)
     m.__aexit__ = AsyncMock(return_value=None)
     m.load = AsyncMock(return_value=model or _make_model())
+    m.add_task = AsyncMock(
+        return_value={"status": "created", "task_id": "new-task", "name": "New task"}
+    )
+    m.complete_task = AsyncMock(
+        return_value={"status": "completed", "task_id": "t1", "name": "Write tests"}
+    )
+    m.update_task = AsyncMock(
+        return_value={"status": "updated", "task_id": "t1", "name": "Write tests"}
+    )
+    m.add_project = AsyncMock(
+        return_value={
+            "status": "created",
+            "project_id": "new-project",
+            "name": "New project",
+        }
+    )
+    m.update_project = AsyncMock(
+        return_value={"status": "updated", "project_id": "p1", "name": "Engineering"}
+    )
+    m.complete_project = AsyncMock(
+        return_value={
+            "status": "completed",
+            "project_id": "p1",
+            "name": "Engineering",
+        }
+    )
     m.invalidate_cache = MagicMock()
     m._client = MagicMock()
     m._client.put_file = AsyncMock(return_value=None)
-    m.sync_status = AsyncMock(return_value={
-        "last_synced": "2026-03-22T12:00:00+00:00",
-        "cached": True,
-        "cache_age_seconds": 5.0,
-        "cache_valid": True,
-    })
+    m.sync_status = AsyncMock(
+        return_value={
+            "last_synced": "2026-03-22T12:00:00+00:00",
+            "cached": True,
+            "cache_age_seconds": 5.0,
+            "cache_valid": True,
+        }
+    )
     return m
 
 
 def _parse_response(contents: list) -> Any:
     """Parse the JSON text from the first TextContent in a tool response."""
-    from typing import Any
     assert contents
     return json.loads(contents[0].text)
 
@@ -98,18 +161,28 @@ def _parse_response(contents: list) -> Any:
 
 class TestListTools:
     @pytest.mark.asyncio
-    async def test_returns_ten_tools(self) -> None:
+    async def test_returns_thirteen_tools(self) -> None:
         tools = await list_tools()
-        assert len(tools) == 10
+        assert len(tools) == 13
 
     @pytest.mark.asyncio
     async def test_tool_names(self) -> None:
         tools = await list_tools()
         names = {t.name for t in tools}
         expected = {
-            "list_tasks", "search_tasks", "get_task", "add_task",
-            "complete_task", "update_task", "list_projects", "list_folders",
-            "sync_now", "sync_status",
+            "list_tasks",
+            "search_tasks",
+            "get_task",
+            "add_task",
+            "complete_task",
+            "update_task",
+            "add_project",
+            "update_project",
+            "complete_project",
+            "list_projects",
+            "list_folders",
+            "sync_now",
+            "sync_status",
         }
         assert names == expected
 
@@ -129,6 +202,7 @@ class TestCallToolDispatch:
     @pytest.mark.asyncio
     async def test_of_error_returned_as_error_dict(self) -> None:
         from omnifocus.errors import OFWebDAVError
+
         with patch(
             "omnifocus.mcp_server._load_model",
             AsyncMock(side_effect=OFWebDAVError("timeout")),
@@ -279,16 +353,20 @@ class TestHandleAddTask:
         data = _parse_response(result)
         assert data["status"] == "created"
         assert "task_id" in data
+        mock.add_task.assert_awaited_once()
+        mock._client.put_file.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_add_with_project(self) -> None:
         mock = _mock_store()
         with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
             with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
-                result = await _handle_add_task({
-                    "name": "Subtask",
-                    "project": "Engineering",
-                })
+                result = await _handle_add_task(
+                    {
+                        "name": "Subtask",
+                        "project": "Engineering",
+                    }
+                )
         data = _parse_response(result)
         assert data["status"] == "created"
 
@@ -346,6 +424,8 @@ class TestHandleCompleteTask:
                 result = await _handle_complete_task({"query": "t1"})
         data = _parse_response(result)
         assert data["status"] == "completed"
+        mock.complete_task.assert_awaited_once()
+        mock._client.put_file.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_complete_by_name(self) -> None:
@@ -375,12 +455,16 @@ class TestHandleUpdateTask:
         mock = _mock_store()
         with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
             with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
-                result = await _handle_update_task({
-                    "task_id": "t1",
-                    "name": "Updated name",
-                })
+                result = await _handle_update_task(
+                    {
+                        "task_id": "t1",
+                        "name": "Updated name",
+                    }
+                )
         data = _parse_response(result)
         assert data["status"] == "updated"
+        mock.update_task.assert_awaited_once()
+        mock._client.put_file.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_update_not_found(self) -> None:
@@ -394,10 +478,12 @@ class TestHandleUpdateTask:
         mock = _mock_store()
         with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
             with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
-                result = await _handle_update_task({
-                    "task_id": "t1",
-                    "flagged": False,
-                })
+                result = await _handle_update_task(
+                    {
+                        "task_id": "t1",
+                        "flagged": False,
+                    }
+                )
         data = _parse_response(result)
         assert data["status"] == "updated"
 
@@ -406,10 +492,12 @@ class TestHandleUpdateTask:
         mock = _mock_store()
         with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
             with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
-                result = await _handle_update_task({
-                    "task_id": "t1",
-                    "due": "2099-12-31T19:00:00",
-                })
+                result = await _handle_update_task(
+                    {
+                        "task_id": "t1",
+                        "due": "2099-12-31T19:00:00",
+                    }
+                )
         data = _parse_response(result)
         assert data["status"] == "updated"
 
@@ -421,6 +509,138 @@ class TestHandleUpdateTask:
                 result = await _handle_update_task({"task_id": "t1", "due": ""})
         data = _parse_response(result)
         assert data["status"] == "updated"
+
+
+# ---------------------------------------------------------------------------
+# project write tools
+# ---------------------------------------------------------------------------
+
+
+class TestHandleAddProject:
+    @pytest.mark.asyncio
+    async def test_add_project(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_add_project({"name": "Project", "folder": "Work"})
+        data = _parse_response(result)
+        assert data["status"] == "created"
+        assert data["project_id"] == "new-project"
+        mock.add_project.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_add_project_missing_name(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_add_project({})
+        data = _parse_response(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_add_project_folder_not_found(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_add_project({"name": "Project", "folder": "Missing"})
+        data = _parse_response(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_add_project_folder_ambiguous(self) -> None:
+        model = _make_model()
+        model.folders["f2"] = Folder(
+            id="f2",
+            name="Work Extra",
+            parent_folder_id=None,
+            rank=200,
+            added=NOW,
+            modified=NOW,
+        )
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            result = await _handle_add_project({"name": "Project", "folder": "Work"})
+        data = _parse_response(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_add_project_invalid_due(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_add_project({"name": "Project", "due": "notadate"})
+        data = _parse_response(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_add_project_invalid_defer(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_add_project({"name": "Project", "defer": "notadate"})
+        data = _parse_response(result)
+        assert "error" in data
+
+
+class TestHandleUpdateProject:
+    @pytest.mark.asyncio
+    async def test_update_project(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_update_project({"project_id": "p1", "name": "Updated"})
+        data = _parse_response(result)
+        assert data["status"] == "updated"
+        mock.update_project.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_update_project_not_found(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_update_project({"project_id": "missing"})
+        data = _parse_response(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_update_project_done_sets_completion(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                await _handle_update_project({"project_id": "p1", "status": "done"})
+        updated_project = mock.update_project.await_args.args[0]
+        assert updated_project.status == "done"
+        assert updated_project.completed is not None
+
+
+class TestHandleCompleteProject:
+    @pytest.mark.asyncio
+    async def test_complete_project_by_id(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_complete_project({"query": "p1"})
+        data = _parse_response(result)
+        assert data["status"] == "completed"
+        mock.complete_project.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_complete_project_by_name(self) -> None:
+        mock = _mock_store()
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
+                result = await _handle_complete_project({"query": "Engineering"})
+        data = _parse_response(result)
+        assert data["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_complete_project_not_found(self) -> None:
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+            result = await _handle_complete_project({"query": "missing"})
+        data = _parse_response(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_complete_project_ambiguous(self) -> None:
+        model = _make_model()
+        model.projects["p2"] = dataclasses.replace(
+            model.projects["p1"],
+            id="p2",
+            name="Engineering Extra",
+        )
+        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+            result = await _handle_complete_project({"query": "Engineering"})
+        data = _parse_response(result)
+        assert "error" in data
 
 
 # ---------------------------------------------------------------------------
@@ -512,8 +732,12 @@ class TestSerialise:
 
     def test_dataclass(self) -> None:
         folder = Folder(
-            id="f1", name="Work", parent_folder_id=None,
-            rank=100, added=NOW, modified=NOW,
+            id="f1",
+            name="Work",
+            parent_folder_id=None,
+            rank=100,
+            added=NOW,
+            modified=NOW,
         )
         result = _serialise(folder)
         assert isinstance(result, dict)
