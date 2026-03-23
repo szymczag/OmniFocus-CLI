@@ -50,9 +50,7 @@ class OFAmbiguousMatch(OFError):
     """
 
     def __init__(self, query: str, candidates: list[tuple[float, str, str]]) -> None:
-        super().__init__(
-            f"Query {query!r} matches {len(candidates)} tasks — be more specific."
-        )
+        super().__init__(f"Query {query!r} matches {len(candidates)} tasks — be more specific.")
         self.query = query
         self.candidates = candidates
 

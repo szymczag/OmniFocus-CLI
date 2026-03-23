@@ -99,8 +99,7 @@ def render_project_tree(
     out = console or _DEFAULT_CONSOLE
 
     filtered_projects = [
-        p for p in projects.values()
-        if status_filter == "all" or p.status == status_filter
+        p for p in projects.values() if status_filter == "all" or p.status == status_filter
     ]
 
     root_tree = Tree("[bold]OmniFocus[/bold]")

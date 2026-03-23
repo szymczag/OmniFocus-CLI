@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import io
+import xml.etree.ElementTree as ET
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC
 
 import pytest
 
@@ -21,8 +22,6 @@ from omnifocus.parser import (
     load_xml_from_zip,
 )
 from tests.conftest import make_zip
-
-import xml.etree.ElementTree as ET
 
 NS = "{http://www.omnigroup.com/namespace/OmniFocus/v2}"
 
@@ -64,13 +63,13 @@ class TestLoadXmlFromZip:
 # Helper function tests
 # ---------------------------------------------------------------------------
 
-_SAMPLE_EL = ET.fromstring(
+_SAMPLE_EL = ET.fromstring(  # noqa: S314
     f'<task xmlns="{NS[1:-1]}" id="t1">'
-    f'  <name>Hello</name>'
-    f'  <rank>42</rank>'
-    f'  <flagged>true</flagged>'
+    f"  <name>Hello</name>"
+    f"  <rank>42</rank>"
+    f"  <flagged>true</flagged>"
     f'  <task idref="parent1"/>'
-    f'</task>'
+    f"</task>"
 )
 
 
@@ -100,7 +99,7 @@ class TestHelpers:
         assert _int(_SAMPLE_EL, "nonexistent") is None
 
     def test_int_invalid(self) -> None:
-        el = ET.fromstring(f'<task xmlns="{NS[1:-1]}"><rank>notanumber</rank></task>')
+        el = ET.fromstring(f'<task xmlns="{NS[1:-1]}"><rank>notanumber</rank></task>')  # noqa: S314
         assert _int(el, "rank") is None
 
     def test_idref_present(self) -> None:
@@ -110,7 +109,7 @@ class TestHelpers:
         assert _idref(_SAMPLE_EL, "folder") is None
 
     def test_idref_no_idref_attr(self) -> None:
-        el = ET.fromstring(f'<task xmlns="{NS[1:-1]}"><context/></task>')
+        el = ET.fromstring(f'<task xmlns="{NS[1:-1]}"><context/></task>')  # noqa: S314
         assert _idref(el, "context") is None
 
 
@@ -118,7 +117,7 @@ class TestParseDt:
     def test_utc_with_z(self) -> None:
         dt = _parse_dt_utc("2026-03-22T15:40:11.347Z")
         assert dt is not None
-        assert dt.tzinfo == timezone.utc
+        assert dt.tzinfo == UTC
         assert dt.year == 2026
         assert dt.month == 3
         assert dt.day == 22

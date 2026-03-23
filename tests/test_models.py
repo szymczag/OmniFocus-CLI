@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from dataclasses import FrozenInstanceError
+from datetime import UTC, datetime
+
+import pytest
 
 from omnifocus.models import Folder, OFModel, Project, Tag, Task
 
-UTC = timezone.utc
 NOW = datetime(2026, 3, 22, 12, 0, 0, tzinfo=UTC)
 
 
@@ -82,8 +84,8 @@ class TestFolder:
 
     def test_frozen(self) -> None:
         f = _folder()
-        import pytest
-        with pytest.raises(Exception):  # FrozenInstanceError
+
+        with pytest.raises(FrozenInstanceError):
             f.name = "Other"  # type: ignore[misc]
 
 
@@ -151,12 +153,8 @@ class TestOFModel:
         model.projects["p1"] = _project()
         model.tasks["t1"] = _task(inbox=False, project_id="p1")
         model.tasks["t2"] = _task(tid="t2", name="Inbox item", inbox=True, project_id=None)
-        model.tasks["t3"] = _task(
-            tid="t3", name="Done task", completed=NOW, project_id="p1"
-        )
-        model.tasks["t4"] = _task(
-            tid="t4", name="Hidden task", hidden=NOW, project_id="p1"
-        )
+        model.tasks["t3"] = _task(tid="t3", name="Done task", completed=NOW, project_id="p1")
+        model.tasks["t4"] = _task(tid="t4", name="Hidden task", hidden=NOW, project_id="p1")
         model.tags["tag1"] = _tag()
         return model
 

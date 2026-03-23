@@ -7,9 +7,8 @@ path needed to exercise the missing line/branch.
 
 from __future__ import annotations
 
-import dataclasses
-import hmac as _hmac
-from datetime import date, datetime, timezone
+import xml.etree.ElementTree as ET
+from datetime import UTC, date, datetime
 from io import StringIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -30,21 +29,16 @@ from omnifocus.fuzzy import _score
 from omnifocus.models import Folder, OFModel, Project, Task
 from omnifocus.parser import (
     _build_folder,
-    _build_tag,
     _build_project,
+    _build_tag,
     _build_task,
-    _resolve_project_ids,
     build_model,
 )
 from omnifocus.writer import TransactionBuilder
 from tests.conftest import make_zip
 
-UTC = timezone.utc
 NOW = datetime(2026, 3, 22, 12, 0, 0, tzinfo=UTC)
 NS = "{http://www.omnigroup.com/namespace/OmniFocus/v2}"
-
-import xml.etree.ElementTree as ET
-
 
 # ---------------------------------------------------------------------------
 # cli.py — _parse_due weekday same-day branch (line 88: days_ahead = 7)
@@ -56,7 +50,6 @@ class TestParseDueSameDayWeekday:
         """When the target weekday is today, we want NEXT week not today."""
         # March 22, 2026 is a Sunday (weekday 6).
         # Entering "sun" should give +7 days (next Sunday), not today.
-        from datetime import timedelta
         result = _parse_due("sun")
         today = datetime.today().date()
         # result must be strictly in the future (not today)
@@ -68,6 +61,7 @@ class TestParseDueInvalidMmDd:
     def test_invalid_mm_dd_falls_through_to_error(self) -> None:
         """'99-99' matches \\d{2}-\\d{2} but fromisoformat raises ValueError."""
         import click
+
         with pytest.raises(click.BadParameter):
             _parse_due("99-99")
 
@@ -80,15 +74,37 @@ class TestParseDueInvalidMmDd:
 def _make_model() -> OFModel:
     model = OFModel()
     model.projects["p1"] = Project(
-        id="p1", name="Eng", folder_id=None, status="active",
-        singleton=False, rank=1, added=NOW, modified=NOW,
-        flagged=False, due=None, start=None, note="", completed=None,
+        id="p1",
+        name="Eng",
+        folder_id=None,
+        status="active",
+        singleton=False,
+        rank=1,
+        added=NOW,
+        modified=NOW,
+        flagged=False,
+        due=None,
+        start=None,
+        note="",
+        completed=None,
     )
     model.tasks["t1"] = Task(
-        id="t1", name="A task", parent_task_id=None, project_id=None,
-        inbox=True, completed=None, flagged=False, due=None, start=None,
-        hidden=None, note="", rank=1, repetition_rule=None,
-        estimated_minutes=None, added=NOW, modified=NOW,
+        id="t1",
+        name="A task",
+        parent_task_id=None,
+        project_id=None,
+        inbox=True,
+        completed=None,
+        flagged=False,
+        due=None,
+        start=None,
+        hidden=None,
+        note="",
+        rank=1,
+        repetition_rule=None,
+        estimated_minutes=None,
+        added=NOW,
+        modified=NOW,
     )
     return model
 
@@ -155,29 +171,49 @@ class TestDoneCmdAmbiguous:
         # Add three tasks with very different names so no substring match
         for i in range(3):
             model.tasks[f"zx{i}"] = Task(
-                id=f"zx{i}", name=f"Alpha beta {i} delta epsilon",
-                parent_task_id=None, project_id=None, inbox=True,
-                completed=None, flagged=False, due=None, start=None,
-                hidden=None, note="", rank=i, repetition_rule=None,
-                estimated_minutes=None, added=NOW, modified=NOW,
+                id=f"zx{i}",
+                name=f"Alpha beta {i} delta epsilon",
+                parent_task_id=None,
+                project_id=None,
+                inbox=True,
+                completed=None,
+                flagged=False,
+                due=None,
+                start=None,
+                hidden=None,
+                note="",
+                rank=i,
+                repetition_rule=None,
+                estimated_minutes=None,
+                added=NOW,
+                modified=NOW,
             )
 
         runner = CliRunner()
-        mock = _mock_store(model)
-
         # The query "alpha" is a substring match (score 0.8) so we'd get one result
         # We need a query where all scores are < 0.8 but > 0 and there are multiple.
         # Use a difflib-only match: "alph" vs "Alpha beta X delta epsilon"
-        # "alph" is NOT a substring of "alpha beta 0 delta epsilon" (case-insensitive "alph" IS in "alpha")
+        # "alph" is not useful here because it still appears within "alpha".
         # Try a different approach: tasks named with similar typos
         model2 = OFModel()
         for i in range(3):
             model2.tasks[f"ty{i}"] = Task(
-                id=f"ty{i}", name=f"Xenomorph{i} research project",
-                parent_task_id=None, project_id=None, inbox=True,
-                completed=None, flagged=False, due=None, start=None,
-                hidden=None, note="", rank=i, repetition_rule=None,
-                estimated_minutes=None, added=NOW, modified=NOW,
+                id=f"ty{i}",
+                name=f"Xenomorph{i} research project",
+                parent_task_id=None,
+                project_id=None,
+                inbox=True,
+                completed=None,
+                flagged=False,
+                due=None,
+                start=None,
+                hidden=None,
+                note="",
+                rank=i,
+                repetition_rule=None,
+                estimated_minutes=None,
+                added=NOW,
+                modified=NOW,
             )
         mock2 = _mock_store(model2)
 
@@ -193,6 +229,7 @@ class TestDoneCmdAmbiguous:
     def test_explicitly_ambiguous_via_fuzzy_patch(self) -> None:
         """Patch find_tasks to return multiple low-score results, verifying the error path."""
         from omnifocus.fuzzy import MatchResult
+
         model = _make_model()
         mock = _mock_store(model)
 
@@ -243,8 +280,12 @@ class TestFormattingFolderNotFound:
         con = Console(file=StringIO(), highlight=False, markup=False, no_color=True, width=200)
         folders = {
             "f1": Folder(
-                id="f1", name="Child Folder", parent_folder_id="missing_parent",
-                rank=1, added=NOW, modified=NOW,
+                id="f1",
+                name="Child Folder",
+                parent_folder_id="missing_parent",
+                rank=1,
+                added=NOW,
+                modified=NOW,
             )
         }
         # Must not raise; should create a placeholder dim node for the missing parent
@@ -290,6 +331,7 @@ class TestFuzzyZeroTokenOverlapToDifflib:
         # "" is technically in every string (empty string is a substring)
         # So this returns SUBSTRING_SCORE
         from omnifocus.fuzzy import SUBSTRING_SCORE
+
         assert score == SUBSTRING_SCORE
 
     def test_whitespace_query_empty_tokens_falls_through_to_difflib(self) -> None:
@@ -540,20 +582,24 @@ class TestLoadModelDirect:
 class TestParseOptionalDate:
     def test_none_returns_none(self) -> None:
         from omnifocus.mcp_server import _parse_optional_date
+
         assert _parse_optional_date(None) is None
 
     def test_empty_string_returns_none(self) -> None:
         from omnifocus.mcp_server import _parse_optional_date
+
         assert _parse_optional_date("") is None
 
     def test_valid_iso_returns_datetime(self) -> None:
         from omnifocus.mcp_server import _parse_optional_date
+
         result = _parse_optional_date("2026-03-22T12:00:00")
         assert result is not None
         assert result.year == 2026
 
     def test_invalid_string_returns_none(self) -> None:
         from omnifocus.mcp_server import _parse_optional_date
+
         assert _parse_optional_date("not-a-date") is None
 
 
@@ -582,11 +628,13 @@ class TestMcpServerMain:
 
         with patch("omnifocus.mcp_server.stdio_server", return_value=_FakeCtx()):
             with patch("omnifocus.mcp_server.server.run", side_effect=_fake_run):
-                with patch("omnifocus.mcp_server.server.create_initialization_options",
-                           return_value={}):
+                with patch(
+                    "omnifocus.mcp_server.server.create_initialization_options", return_value={}
+                ):
                     main()  # synchronous call; asyncio.run() creates its own event loop
 
     def test_main_is_callable(self) -> None:
         """Smoke test: main is importable and callable as a function."""
         from omnifocus.mcp_server import main
+
         assert callable(main)

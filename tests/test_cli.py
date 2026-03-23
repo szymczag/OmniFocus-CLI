@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
 from omnifocus.cli import _parse_due, cli
-from omnifocus.errors import OFEncryptionError, OFWebDAVError
+from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
 from omnifocus.models import Folder, OFModel, Project, Task
 
-UTC = timezone.utc
 NOW = datetime(2026, 3, 22, 12, 0, 0, tzinfo=UTC)
 
 
@@ -33,12 +32,14 @@ class TestParseDue:
 
     def test_tomorrow(self) -> None:
         from datetime import timedelta
+
         result = _parse_due("tomorrow")
         expected = (datetime.today() + timedelta(days=1)).date()
         assert result.date() == expected
 
     def test_tom(self) -> None:
         from datetime import timedelta
+
         result = _parse_due("tom")
         expected = (datetime.today() + timedelta(days=1)).date()
         assert result.date() == expected
@@ -64,11 +65,13 @@ class TestParseDue:
 
     def test_invalid_raises(self) -> None:
         import click
+
         with pytest.raises(click.BadParameter):
             _parse_due("notadate")
 
     def test_invalid_iso(self) -> None:
         import click
+
         with pytest.raises(click.BadParameter):
             _parse_due("9999-99-99")
 
@@ -81,25 +84,58 @@ class TestParseDue:
 def _make_model() -> OFModel:
     model = OFModel()
     model.folders["f1"] = Folder(
-        id="f1", name="Work", parent_folder_id=None,
-        rank=100, added=NOW, modified=NOW
+        id="f1", name="Work", parent_folder_id=None, rank=100, added=NOW, modified=NOW
     )
     model.projects["p1"] = Project(
-        id="p1", name="Engineering", folder_id="f1", status="active",
-        singleton=False, rank=100, added=NOW, modified=NOW,
-        flagged=False, due=None, start=None, note="", completed=None,
+        id="p1",
+        name="Engineering",
+        folder_id="f1",
+        status="active",
+        singleton=False,
+        rank=100,
+        added=NOW,
+        modified=NOW,
+        flagged=False,
+        due=None,
+        start=None,
+        note="",
+        completed=None,
     )
     model.tasks["t1"] = Task(
-        id="t1", name="Write tests", parent_task_id="p1", project_id="p1",
-        inbox=False, completed=None, flagged=False, due=None, start=None,
-        hidden=None, note="", rank=100, repetition_rule=None,
-        estimated_minutes=None, added=NOW, modified=NOW,
+        id="t1",
+        name="Write tests",
+        parent_task_id="p1",
+        project_id="p1",
+        inbox=False,
+        completed=None,
+        flagged=False,
+        due=None,
+        start=None,
+        hidden=None,
+        note="",
+        rank=100,
+        repetition_rule=None,
+        estimated_minutes=None,
+        added=NOW,
+        modified=NOW,
     )
     model.tasks["t2"] = Task(
-        id="t2", name="Buy milk", parent_task_id=None, project_id=None,
-        inbox=True, completed=None, flagged=True, due=None, start=None,
-        hidden=None, note="", rank=200, repetition_rule=None,
-        estimated_minutes=None, added=NOW, modified=NOW,
+        id="t2",
+        name="Buy milk",
+        parent_task_id=None,
+        project_id=None,
+        inbox=True,
+        completed=None,
+        flagged=True,
+        due=None,
+        start=None,
+        hidden=None,
+        note="",
+        rank=200,
+        repetition_rule=None,
+        estimated_minutes=None,
+        added=NOW,
+        modified=NOW,
     )
     return model
 
@@ -110,6 +146,24 @@ def _mock_store(model: OFModel | None = None) -> MagicMock:
     m.__aenter__ = AsyncMock(return_value=m)
     m.__aexit__ = AsyncMock(return_value=None)
     m.load = AsyncMock(return_value=model or _make_model())
+    m.add_task = AsyncMock(
+        return_value={"status": "created", "task_id": "new-task", "name": "Task"}
+    )
+    m.complete_task = AsyncMock(
+        return_value={"status": "completed", "task_id": "t1", "name": "Write tests"}
+    )
+    m.update_task = AsyncMock(
+        return_value={"status": "updated", "task_id": "t1", "name": "Write tests"}
+    )
+    m.add_project = AsyncMock(
+        return_value={"status": "created", "project_id": "new-project", "name": "Project"}
+    )
+    m.update_project = AsyncMock(
+        return_value={"status": "updated", "project_id": "p1", "name": "Engineering"}
+    )
+    m.complete_project = AsyncMock(
+        return_value={"status": "completed", "project_id": "p1", "name": "Engineering"}
+    )
     m.invalidate_cache = MagicMock()
     m._client = MagicMock()
     m._client.put_file = AsyncMock(return_value=None)
@@ -163,7 +217,6 @@ class TestTasksCmd:
         assert result.exit_code == 0
 
     def test_tasks_json_format(self) -> None:
-        import json
         runner = CliRunner()
         mock = _mock_store()
         with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
@@ -234,6 +287,8 @@ class TestAddCmd:
             result = runner.invoke(cli, ["add", "Buy bread"])
         assert result.exit_code == 0
         assert "Added" in result.output
+        mock.add_task.assert_awaited_once()
+        mock._client.put_file.assert_not_called()
 
     def test_add_with_due(self) -> None:
         runner = CliRunner()
@@ -262,9 +317,19 @@ class TestAddCmd:
         model = _make_model()
         # Add two projects with similar names
         model.projects["p2"] = Project(
-            id="p2", name="Engineering EXTRA", folder_id=None, status="active",
-            singleton=False, rank=200, added=NOW, modified=NOW,
-            flagged=False, due=None, start=None, note="", completed=None,
+            id="p2",
+            name="Engineering EXTRA",
+            folder_id=None,
+            status="active",
+            singleton=False,
+            rank=200,
+            added=NOW,
+            modified=NOW,
+            flagged=False,
+            due=None,
+            start=None,
+            note="",
+            completed=None,
         )
         runner = CliRunner()
         mock = _mock_store(model)
@@ -297,10 +362,19 @@ class TestAddCmd:
     def test_add_webdav_error(self) -> None:
         runner = CliRunner()
         mock = _mock_store()
-        mock._client.put_file = AsyncMock(side_effect=OFWebDAVError("err"))
+        mock.add_task = AsyncMock(side_effect=OFWebDAVError("err"))
         with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
             result = runner.invoke(cli, ["add", "Task"])
         assert result.exit_code != 0
+
+    def test_add_store_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.add_task = AsyncMock(side_effect=OFEncryptionError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["add", "Task"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +390,8 @@ class TestDoneCmd:
             result = runner.invoke(cli, ["done", "t1", "--yes"])
         assert result.exit_code == 0
         assert "Completed" in result.output
+        mock.complete_task.assert_awaited_once()
+        mock._client.put_file.assert_not_called()
 
     def test_done_by_name(self) -> None:
         runner = CliRunner()
@@ -334,16 +410,26 @@ class TestDoneCmd:
 
     def test_done_ambiguous_without_yes(self) -> None:
         """Ambiguous match with score < 0.8 should error."""
-        from omnifocus.fuzzy import MatchResult
         model = _make_model()
         # Add tasks with similar but different names
         for i in range(3):
             model.tasks[f"ta{i}"] = Task(
-                id=f"ta{i}", name=f"Task number {i}", parent_task_id=None,
-                project_id=None, inbox=True, completed=None, flagged=False,
-                due=None, start=None, hidden=None, note="", rank=i,
-                repetition_rule=None, estimated_minutes=None,
-                added=NOW, modified=NOW,
+                id=f"ta{i}",
+                name=f"Task number {i}",
+                parent_task_id=None,
+                project_id=None,
+                inbox=True,
+                completed=None,
+                flagged=False,
+                due=None,
+                start=None,
+                hidden=None,
+                note="",
+                rank=i,
+                repetition_rule=None,
+                estimated_minutes=None,
+                added=NOW,
+                modified=NOW,
             )
         runner = CliRunner()
         mock = _mock_store(model)
@@ -363,10 +449,213 @@ class TestDoneCmd:
     def test_done_webdav_error(self) -> None:
         runner = CliRunner()
         mock = _mock_store()
-        mock._client.put_file = AsyncMock(side_effect=OFWebDAVError("err"))
+        mock.complete_task = AsyncMock(side_effect=OFWebDAVError("err"))
         with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
             result = runner.invoke(cli, ["done", "t1", "--yes"])
         assert result.exit_code != 0
+
+    def test_done_store_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.complete_task = AsyncMock(side_effect=OFEncryptionError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["done", "t1", "--yes"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
+
+
+# ---------------------------------------------------------------------------
+# of project-*
+# ---------------------------------------------------------------------------
+
+
+class TestProjectWriteCmds:
+    def test_project_add(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-add", "New project", "--folder", "Work"])
+        assert result.exit_code == 0
+        assert "Added project" in result.output
+        mock.add_project.assert_awaited_once()
+
+    def test_project_add_folder_not_found(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-add", "New project", "--folder", "Missing"])
+        assert result.exit_code != 0
+        assert "No folder" in result.output
+
+    def test_project_add_ambiguous_folder(self) -> None:
+        model = _make_model()
+        model.folders["f2"] = Folder(
+            id="f2",
+            name="Work Extra",
+            parent_folder_id=None,
+            rank=200,
+            added=NOW,
+            modified=NOW,
+        )
+        runner = CliRunner()
+        mock = _mock_store(model)
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-add", "New project", "--folder", "Work"])
+        assert result.exit_code != 0
+        assert "Multiple folders" in result.output
+
+    def test_project_add_store_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.add_project = AsyncMock(side_effect=OFWebDAVError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-add", "New project"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
+
+    def test_project_add_generic_store_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.add_project = AsyncMock(side_effect=OFError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-add", "New project"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
+
+    def test_project_update(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli,
+                ["project-update", "Engineering", "--note", "updated", "--flagged"],
+            )
+        assert result.exit_code == 0
+        assert "Updated project" in result.output
+        mock.update_project.assert_awaited_once()
+
+    def test_project_update_clears_due_and_defer(self) -> None:
+        model = _make_model()
+        model.projects["p1"] = Project(
+            id="p1",
+            name="Engineering",
+            folder_id="f1",
+            status="active",
+            singleton=False,
+            rank=100,
+            added=NOW,
+            modified=NOW,
+            flagged=False,
+            due=datetime(2026, 4, 1, 19, 0, 0),
+            start=datetime(2026, 4, 2, 19, 0, 0),
+            note="",
+            completed=None,
+        )
+        runner = CliRunner()
+        mock = _mock_store(model)
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(
+                cli,
+                ["project-update", "Engineering", "--clear-due", "--clear-defer"],
+            )
+        assert result.exit_code == 0
+        updated_project = mock.update_project.await_args.args[0]
+        assert updated_project.due is None
+        assert updated_project.start is None
+
+    def test_project_update_sets_done_status(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-update", "Engineering", "--status", "done"])
+        assert result.exit_code == 0
+        updated_project = mock.update_project.await_args.args[0]
+        assert updated_project.status == "done"
+        assert updated_project.completed is not None
+
+    def test_project_update_ambiguous_match(self) -> None:
+        model = _make_model()
+        model.projects["p2"] = Project(
+            id="p2",
+            name="Engineering EXTRA",
+            folder_id=None,
+            status="active",
+            singleton=False,
+            rank=200,
+            added=NOW,
+            modified=NOW,
+            flagged=False,
+            due=None,
+            start=None,
+            note="",
+            completed=None,
+        )
+        runner = CliRunner()
+        mock = _mock_store(model)
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-update", "Engineering", "--note", "x"])
+        assert result.exit_code != 0
+        assert "Multiple projects" in result.output
+
+    def test_project_update_not_found(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-update", "Missing", "--note", "x"])
+        assert result.exit_code != 0
+        assert "No project" in result.output
+
+    def test_project_update_store_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.update_project = AsyncMock(side_effect=OFWebDAVError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-update", "Engineering", "--note", "x"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
+
+    def test_project_update_generic_store_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.update_project = AsyncMock(side_effect=OFError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-update", "Engineering", "--note", "x"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
+
+    def test_project_done(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-done", "Engineering", "--yes"])
+        assert result.exit_code == 0
+        assert "Completed project" in result.output
+        mock.complete_project.assert_awaited_once()
+
+    def test_project_done_confirmation_path(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-done", "Engineering"], input="y\n")
+        assert result.exit_code == 0
+
+    def test_project_done_store_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.complete_project = AsyncMock(side_effect=OFWebDAVError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-done", "Engineering", "--yes"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
+
+    def test_project_done_generic_store_error(self) -> None:
+        runner = CliRunner()
+        mock = _mock_store()
+        mock.complete_project = AsyncMock(side_effect=OFError("boom"))
+        with patch("omnifocus.cli.OFocusStore.from_env", return_value=mock):
+            result = runner.invoke(cli, ["project-done", "Engineering", "--yes"])
+        assert result.exit_code != 0
+        assert "boom" in result.output
 
 
 # ---------------------------------------------------------------------------

@@ -18,13 +18,11 @@ import asyncio
 import logging
 import re
 import sys
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
 import click
 
 from omnifocus.errors import (
-    OFAmbiguousMatch,
     OFBundleNotFound,
     OFEncryptionError,
     OFError,
@@ -39,7 +37,6 @@ from omnifocus.formatting import (
 from omnifocus.fuzzy import find_tasks
 from omnifocus.models import OFModel, Project, Task
 from omnifocus.store import OFocusStore
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -127,16 +124,15 @@ def _match_active_project(model: OFModel, query: str) -> Project:
     """Resolve a single active project by fuzzy substring."""
     needle = query.lower()
     matches = [
-        project for project in model.projects.values()
+        project
+        for project in model.projects.values()
         if needle in project.name.lower() and project.status == "active"
     ]
     if not matches:
         raise click.ClickException(f"No active project matching {query!r}")
     if len(matches) > 1:
         names = ", ".join(match.name for match in matches[:5])
-        raise click.ClickException(
-            f"Multiple projects match {query!r}: {names}. Be more specific."
-        )
+        raise click.ClickException(f"Multiple projects match {query!r}: {names}. Be more specific.")
     return matches[0]
 
 
@@ -148,9 +144,7 @@ def _match_project(model: OFModel, query: str) -> Project:
         raise click.ClickException(f"No project matching {query!r}")
     if len(matches) > 1:
         names = ", ".join(match.name for match in matches[:5])
-        raise click.ClickException(
-            f"Multiple projects match {query!r}: {names}. Be more specific."
-        )
+        raise click.ClickException(f"Multiple projects match {query!r}: {names}. Be more specific.")
     return matches[0]
 
 
@@ -162,9 +156,7 @@ def _match_folder_id(model: OFModel, query: str) -> str:
         raise click.ClickException(f"No folder matching {query!r}")
     if len(matches) > 1:
         names = ", ".join(match.name for match in matches[:5])
-        raise click.ClickException(
-            f"Multiple folders match {query!r}: {names}. Be more specific."
-        )
+        raise click.ClickException(f"Multiple folders match {query!r}: {names}. Be more specific.")
     return matches[0].id
 
 
@@ -190,8 +182,7 @@ def _match_task(model: OFModel, query: str) -> Task:
 
 
 @click.group()
-@click.option("--debug", is_flag=True, default=False,
-              help="Enable debug logging to stderr.")
+@click.option("--debug", is_flag=True, default=False, help="Enable debug logging to stderr.")
 @click.pass_context
 def cli(ctx: click.Context, debug: bool) -> None:
     """OmniFocus 4 command-line interface.
@@ -226,7 +217,6 @@ def sync_cmd() -> None:
         try:
             async with OFocusStore.from_env() as store:
                 model = await store.load(force_refresh=True)
-                total = len(model.tasks) + len(model.projects)
                 click.echo(
                     f"Synced: {len(model.tasks)} tasks, "
                     f"{len(model.projects)} projects, "
@@ -252,17 +242,23 @@ def sync_cmd() -> None:
 @click.option("--today", is_flag=True, help="Show tasks due today or overdue.")
 @click.option("--flagged", is_flag=True, help="Show only flagged tasks.")
 @click.option("--due", "due_only", is_flag=True, help="Show only tasks with a due date.")
-@click.option("--project", "project_name", default=None, metavar="NAME",
-              help="Filter by project name (substring, case-insensitive).")
-@click.option("--format", "fmt", type=click.Choice(["table", "json"]),
-              default="table", help="Output format.")
+@click.option(
+    "--project",
+    "project_name",
+    default=None,
+    metavar="NAME",
+    help="Filter by project name (substring, case-insensitive).",
+)
+@click.option(
+    "--format", "fmt", type=click.Choice(["table", "json"]), default="table", help="Output format."
+)
 @click.option("--all", "show_all", is_flag=True, help="Include completed tasks.")
 def tasks_cmd(
     inbox: bool,
     today: bool,
     flagged: bool,
     due_only: bool,
-    project_name: Optional[str],
+    project_name: str | None,
     fmt: str,
     show_all: bool,
 ) -> None:
@@ -288,8 +284,7 @@ def tasks_cmd(
         if project_name:
             needle = project_name.lower()
             matching_proj_ids = {
-                pid for pid, p in model.projects.items()
-                if needle in p.name.lower()
+                pid for pid, p in model.projects.items() if needle in p.name.lower()
             }
             tasks = [t for t in tasks if t.project_id in matching_proj_ids]
 
@@ -310,18 +305,28 @@ def tasks_cmd(
 
 @cli.command("add")
 @click.argument("name")
-@click.option("--project", "project_name", default=None, metavar="NAME",
-              help="Add to this project (substring match).")
-@click.option("--due", "due_str", default=None, metavar="DATE",
-              help="Due date: YYYY-MM-DD, today, tomorrow, mon-sun.")
+@click.option(
+    "--project",
+    "project_name",
+    default=None,
+    metavar="NAME",
+    help="Add to this project (substring match).",
+)
+@click.option(
+    "--due",
+    "due_str",
+    default=None,
+    metavar="DATE",
+    help="Due date: YYYY-MM-DD, today, tomorrow, mon-sun.",
+)
 @click.option("--flagged", is_flag=True, help="Mark as flagged.")
 @click.option("--note", default=None, metavar="TEXT", help="Task note.")
 def add_cmd(
     name: str,
-    project_name: Optional[str],
-    due_str: Optional[str],
+    project_name: str | None,
+    due_str: str | None,
     flagged: bool,
-    note: Optional[str],
+    note: str | None,
 ) -> None:
     """Add a task to inbox or a specific project.
 
@@ -329,12 +334,12 @@ def add_cmd(
     """
 
     async def _run_add() -> None:
-        due_dt: Optional[datetime] = None
+        due_dt: datetime | None = None
         if due_str:
             due_dt = _parse_due(due_str)
 
         model = await _get_model()
-        parent_task_id: Optional[str] = None
+        parent_task_id: str | None = None
         inbox = True
 
         if project_name:
@@ -401,10 +406,15 @@ def done_cmd(query: str, yes: bool) -> None:
 
 
 @cli.command("projects")
-@click.option("--status", type=click.Choice(["active", "all", "inactive"]),
-              default="active", help="Filter by project status.")
-@click.option("--format", "fmt", type=click.Choice(["tree", "json"]),
-              default="tree", help="Output format.")
+@click.option(
+    "--status",
+    type=click.Choice(["active", "all", "inactive"]),
+    default="active",
+    help="Filter by project status.",
+)
+@click.option(
+    "--format", "fmt", type=click.Choice(["tree", "json"]), default="tree", help="Output format."
+)
 def projects_cmd(status: str, fmt: str) -> None:
     """Show the folder/project hierarchy."""
 
@@ -432,11 +442,11 @@ def projects_cmd(status: str, fmt: str) -> None:
 )
 def project_add_cmd(
     name: str,
-    folder_name: Optional[str],
+    folder_name: str | None,
     note: str,
     flagged: bool,
-    due_str: Optional[str],
-    defer_str: Optional[str],
+    due_str: str | None,
+    defer_str: str | None,
     status: str,
 ) -> None:
     """Add a new project."""
@@ -482,14 +492,14 @@ def project_add_cmd(
 )
 def project_update_cmd(
     query: str,
-    new_name: Optional[str],
-    note: Optional[str],
-    flagged: Optional[bool],
-    due_str: Optional[str],
+    new_name: str | None,
+    note: str | None,
+    flagged: bool | None,
+    due_str: str | None,
     clear_due: bool,
-    defer_str: Optional[str],
+    defer_str: str | None,
     clear_defer: bool,
-    status: Optional[str],
+    status: str | None,
 ) -> None:
     """Update an existing project."""
 
@@ -497,10 +507,8 @@ def project_update_cmd(
         model = await _get_model()
         project = _match_project(model, query)
         due_dt = None if clear_due else (_parse_due(due_str) if due_str else project.due)
-        defer_dt = None if clear_defer else (
-            _parse_due(defer_str) if defer_str else project.start
-        )
-        now = datetime.now(timezone.utc)
+        defer_dt = None if clear_defer else (_parse_due(defer_str) if defer_str else project.start)
+        now = datetime.now(UTC)
         updated = Project(
             id=project.id,
             name=new_name or project.name,
@@ -514,7 +522,9 @@ def project_update_cmd(
             due=due_dt,
             start=defer_dt,
             note=project.note if note is None else note,
-            completed=now if (status == "done" and project.completed is None) else project.completed,
+            completed=(
+                now if status == "done" and project.completed is None else project.completed
+            ),
             tag_ids=project.tag_ids,
         )
         try:

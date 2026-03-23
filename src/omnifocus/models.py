@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -35,7 +34,7 @@ class Folder:
 
     id: str
     name: str
-    parent_folder_id: Optional[str]
+    parent_folder_id: str | None
     rank: int
     added: datetime
     modified: datetime
@@ -54,7 +53,7 @@ class Tag:
 
     id: str
     name: str
-    parent_tag_id: Optional[str]
+    parent_tag_id: str | None
     rank: int
 
 
@@ -82,18 +81,18 @@ class Project:
 
     id: str
     name: str
-    folder_id: Optional[str]
+    folder_id: str | None
     status: str
     singleton: bool
     rank: int
     added: datetime
     modified: datetime
     flagged: bool
-    due: Optional[datetime]
-    start: Optional[datetime]
+    due: datetime | None
+    start: datetime | None
     note: str
-    completed: Optional[datetime]
-    tag_ids: tuple[str, ...] = field(default_factory=tuple)  # type: ignore[assignment]
+    completed: datetime | None
+    tag_ids: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -126,19 +125,19 @@ class Task:
 
     id: str
     name: str
-    parent_task_id: Optional[str]
-    project_id: Optional[str]
+    parent_task_id: str | None
+    project_id: str | None
     inbox: bool
-    completed: Optional[datetime]
+    completed: datetime | None
     flagged: bool
-    due: Optional[datetime]
-    start: Optional[datetime]
-    hidden: Optional[datetime]
+    due: datetime | None
+    start: datetime | None
+    hidden: datetime | None
     note: str
     rank: int
-    repetition_rule: Optional[str]
-    estimated_minutes: Optional[int]
-    tag_ids: tuple[str, ...] = field(default_factory=tuple)  # type: ignore[assignment]
+    repetition_rule: str | None
+    estimated_minutes: int | None
+    tag_ids: tuple[str, ...] = field(default_factory=tuple)
     added: datetime = field(default_factory=lambda: datetime.utcnow())
     modified: datetime = field(default_factory=lambda: datetime.utcnow())
     order: str = "parallel"
@@ -167,10 +166,7 @@ class OFModel:
     @property
     def active_tasks(self) -> list[Task]:
         """Return all tasks that are not completed and not hidden."""
-        return [
-            t for t in self.tasks.values()
-            if t.completed is None and t.hidden is None
-        ]
+        return [t for t in self.tasks.values() if t.completed is None and t.hidden is None]
 
     @property
     def inbox_tasks(self) -> list[Task]:

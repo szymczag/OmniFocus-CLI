@@ -72,8 +72,7 @@ def parse_file_header(data: bytes) -> tuple[int, int]:
     """
     if len(data) < _MIN_HEADER_LEN:
         raise OFEncryptionError(
-            f"Encrypted file too short: need at least {_MIN_HEADER_LEN} bytes, "
-            f"got {len(data)}"
+            f"Encrypted file too short: need at least {_MIN_HEADER_LEN} bytes, " f"got {len(data)}"
         )
     if data[:MAGIC_LEN] != MAGIC:
         raise OFEncryptionError(
@@ -81,8 +80,8 @@ def parse_file_header(data: bytes) -> tuple[int, int]:
             f"got {data[:MAGIC_LEN]!r}"
         )
 
-    info_length = int.from_bytes(data[MAGIC_LEN: MAGIC_LEN + 2], "big")
-    key_id = int.from_bytes(data[MAGIC_LEN + 2: MAGIC_LEN + 4], "big")
+    info_length = int.from_bytes(data[MAGIC_LEN : MAGIC_LEN + 2], "big")
+    key_id = int.from_bytes(data[MAGIC_LEN + 2 : MAGIC_LEN + 4], "big")
 
     # Segments start after: magic + 2-byte info_length field + info_length bytes,
     # rounded up to the next 16-byte boundary.

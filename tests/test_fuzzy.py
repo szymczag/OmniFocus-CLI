@@ -2,21 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-import pytest
+from datetime import UTC, datetime
 
 from omnifocus.fuzzy import (
     EXACT_SCORE,
     MIN_SCORE,
     SUBSTRING_SCORE,
-    MatchResult,
     _score,
     find_tasks,
 )
 from omnifocus.models import Task
 
-UTC = timezone.utc
+UTC = UTC
 NOW = datetime(2026, 3, 22, tzinfo=UTC)
 
 
@@ -48,7 +45,7 @@ TASKS = [
     _task("t04", "Write unit tests"),
     _task("t05", "Fix production bug"),
     _task("t06", "Zrób zakupy spożywcze"),  # Polish
-    _task("t07", "Buy 🛒 groceries"),        # emoji
+    _task("t07", "Buy 🛒 groceries"),  # emoji
 ]
 
 

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 import respx
-import httpx
 
 from omnifocus.errors import OFWebDAVError
 from omnifocus.sync.webdav import WebDAVClient
@@ -141,9 +141,7 @@ class TestListBundle:
     @pytest.mark.asyncio
     @respx.mock
     async def test_404_raises(self) -> None:
-        respx.route(method="PROPFIND", url=BASE_URL).mock(
-            return_value=httpx.Response(404)
-        )
+        respx.route(method="PROPFIND", url=BASE_URL).mock(return_value=httpx.Response(404))
         with pytest.raises(OFWebDAVError) as exc_info:
             async with _make_client() as client:
                 await client.list_bundle()
@@ -250,6 +248,7 @@ class TestRetry:
         )
         # Override delay to speed up tests
         import omnifocus.sync.webdav as wdav_module
+
         original = wdav_module._RETRY_BASE_DELAY
         wdav_module._RETRY_BASE_DELAY = 0.0
         try:
@@ -265,6 +264,7 @@ class TestRetry:
         url = BASE_URL + "file.zip"
         respx.get(url).mock(return_value=httpx.Response(503))
         import omnifocus.sync.webdav as wdav_module
+
         original = wdav_module._RETRY_BASE_DELAY
         wdav_module._RETRY_BASE_DELAY = 0.0
         try:
@@ -286,6 +286,7 @@ class TestRetry:
             ]
         )
         import omnifocus.sync.webdav as wdav_module
+
         original = wdav_module._RETRY_BASE_DELAY
         wdav_module._RETRY_BASE_DELAY = 0.0
         try:
@@ -301,6 +302,7 @@ class TestRetry:
         url = BASE_URL + "file.zip"
         respx.get(url).mock(side_effect=httpx.ConnectError("timeout"))
         import omnifocus.sync.webdav as wdav_module
+
         original = wdav_module._RETRY_BASE_DELAY
         wdav_module._RETRY_BASE_DELAY = 0.0
         try:

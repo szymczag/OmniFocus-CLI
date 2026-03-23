@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from io import StringIO
 
-import pytest
 from rich.console import Console
 
 from omnifocus.formatting import (
@@ -20,7 +19,7 @@ from omnifocus.formatting import (
 )
 from omnifocus.models import Folder, Project, Task
 
-UTC = timezone.utc
+UTC = UTC
 NOW = datetime(2026, 3, 22, 12, 0, 0, tzinfo=UTC)
 
 

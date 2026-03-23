@@ -26,9 +26,9 @@ Usage::
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Sequence
 
 from omnifocus.models import Task
 
