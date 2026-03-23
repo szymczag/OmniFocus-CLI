@@ -11,6 +11,9 @@ Tools
 ``add_task``        Create a new task.
 ``complete_task``   Mark a task as completed.
 ``update_task``     Update name, due date, flagged, or note on a task.
+``add_project``     Create a new project.
+``update_project``  Update a project.
+``complete_project`` Mark a project completed.
 ``list_projects``   List projects (optionally filtered by status).
 ``list_folders``    List all folders.
 ``sync_now``        Trigger a full WebDAV sync.
@@ -49,12 +52,11 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from omnifocus.errors import OFError, OFTaskNotFound
+from omnifocus.errors import OFError
 from omnifocus.formatting import _json_default
 from omnifocus.fuzzy import find_tasks
-from omnifocus.models import OFModel, Task
+from omnifocus.models import OFModel, Project, Task
 from omnifocus.store import OFocusStore
-from omnifocus.writer import TaskWriter
 
 # ---------------------------------------------------------------------------
 # Server instance
@@ -195,6 +197,51 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="add_project",
+            description="Create a new OmniFocus project.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "folder": {"type": "string", "description": "Folder name substring"},
+                    "due": {"type": "string", "description": "Due date ISO 8601 or natural"},
+                    "defer": {"type": "string", "description": "Defer date ISO 8601 or natural"},
+                    "flagged": {"type": "boolean"},
+                    "note": {"type": "string"},
+                    "status": {"type": "string", "enum": ["active", "inactive"]},
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="update_project",
+            description="Update a project's name, due date, defer date, flagged status, or note.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "due": {"type": "string", "description": "ISO 8601 datetime or empty to clear"},
+                    "defer": {"type": "string", "description": "ISO 8601 datetime or empty to clear"},
+                    "flagged": {"type": "boolean"},
+                    "note": {"type": "string"},
+                    "status": {"type": "string", "enum": ["active", "inactive", "done", "dropped"]},
+                },
+                "required": ["project_id"],
+            },
+        ),
+        Tool(
+            name="complete_project",
+            description="Mark a project as completed by ID or fuzzy name.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Project ID or name fragment"},
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
             name="list_projects",
             description="List OmniFocus projects.",
             inputSchema={
@@ -241,6 +288,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "add_task": _handle_add_task,
         "complete_task": _handle_complete_task,
         "update_task": _handle_update_task,
+        "add_project": _handle_add_project,
+        "update_project": _handle_update_project,
+        "complete_project": _handle_complete_project,
         "list_projects": _handle_list_projects,
         "list_folders": _handle_list_folders,
         "sync_now": _handle_sync_now,
@@ -333,21 +383,17 @@ async def _handle_add_task(args: dict[str, Any]) -> list[TextContent]:
             except ValueError:
                 return _text({"error": f"Invalid due date: {args['due']!r}"})
 
-    writer = TaskWriter()
-    fname, data, new_id = writer.add_task(
-        name=name,
-        parent_task_id=parent_task_id,
-        inbox=inbox,
-        flagged=bool(args.get("flagged", False)),
-        due_dt=due_dt,
-        note=str(args.get("note", "")),
-    )
-
     async with OFocusStore.from_env() as store:
-        store.invalidate_cache()
-        await store._client.put_file(fname, data)
+        result = await store.add_task(
+            name=name,
+            parent_task_id=parent_task_id,
+            inbox=inbox,
+            flagged=bool(args.get("flagged", False)),
+            due_dt=due_dt,
+            note=str(args.get("note", "")),
+        )
 
-    return _text({"status": "created", "task_id": new_id, "name": name})
+    return _text(result)
 
 
 async def _handle_complete_task(args: dict[str, Any]) -> list[TextContent]:
@@ -358,14 +404,10 @@ async def _handle_complete_task(args: dict[str, Any]) -> list[TextContent]:
         return _text({"error": f"No active task matching {query!r}"})
     task = results[0].task
 
-    writer = TaskWriter()
-    fname, data = writer.complete_task(task)
-
     async with OFocusStore.from_env() as store:
-        store.invalidate_cache()
-        await store._client.put_file(fname, data)
+        result = await store.complete_task(task)
 
-    return _text({"status": "completed", "task_id": task.id, "name": task.name})
+    return _text(result)
 
 
 async def _handle_update_task(args: dict[str, Any]) -> list[TextContent]:
@@ -386,16 +428,112 @@ async def _handle_update_task(args: dict[str, Any]) -> list[TextContent]:
         modified=now,
     )
 
-    from omnifocus.writer import TaskWriter
-    writer = TaskWriter()
-    builder = _build_tx_for_task(updated)
-    fname, data = writer._build_zip(builder, now)
+    async with OFocusStore.from_env() as store:
+        result = await store.update_task(updated)
+
+    return _text(result)
+
+
+async def _handle_add_project(args: dict[str, Any]) -> list[TextContent]:
+    from omnifocus.cli import _parse_due
+    import click
+
+    name = str(args.get("name", ""))
+    if not name:
+        return _text({"error": "name is required"})
+
+    model = await _load_model()
+    folder_id: str | None = None
+    if args.get("folder"):
+        needle = str(args["folder"]).lower()
+        matches = [folder for folder in model.folders.values() if needle in folder.name.lower()]
+        if not matches:
+            return _text({"error": f"No folder matching {args['folder']!r}"})
+        if len(matches) > 1:
+            return _text({"error": f"Multiple folders match {args['folder']!r}"})
+        folder_id = matches[0].id
+
+    def _parse_natural(value: Any) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return _parse_due(str(value))
+        except click.BadParameter:
+            try:
+                return datetime.fromisoformat(str(value))
+            except ValueError:
+                return None
+
+    due_dt = _parse_natural(args.get("due"))
+    if args.get("due") and due_dt is None:
+        return _text({"error": f"Invalid due date: {args['due']!r}"})
+    defer_dt = _parse_natural(args.get("defer"))
+    if args.get("defer") and defer_dt is None:
+        return _text({"error": f"Invalid defer date: {args['defer']!r}"})
 
     async with OFocusStore.from_env() as store:
-        store.invalidate_cache()
-        await store._client.put_file(fname, data)
+        result = await store.add_project(
+            name=name,
+            folder_id=folder_id,
+            status=str(args.get("status", "active")),
+            flagged=bool(args.get("flagged", False)),
+            due_dt=due_dt,
+            start_dt=defer_dt,
+            note=str(args.get("note", "")),
+        )
 
-    return _text({"status": "updated", "task_id": task_id})
+    return _text(result)
+
+
+async def _handle_update_project(args: dict[str, Any]) -> list[TextContent]:
+    project_id = str(args.get("project_id", ""))
+    model = await _load_model()
+    project = model.projects.get(project_id)
+    if project is None:
+        return _text({"error": f"Project not found: {project_id}"})
+
+    updated = Project(
+        id=project.id,
+        name=str(args["name"]) if "name" in args else project.name,
+        folder_id=project.folder_id,
+        status=str(args["status"]) if "status" in args else project.status,
+        singleton=project.singleton,
+        rank=project.rank,
+        added=project.added,
+        modified=datetime.now(timezone.utc),
+        flagged=bool(args["flagged"]) if "flagged" in args else project.flagged,
+        due=_parse_optional_date(str(args["due"])) if "due" in args else project.due,
+        start=_parse_optional_date(str(args["defer"])) if "defer" in args else project.start,
+        note=str(args["note"]) if "note" in args else project.note,
+        completed=project.completed,
+        tag_ids=project.tag_ids,
+    )
+    if "status" in args and args["status"] == "done" and updated.completed is None:
+        updated = dataclasses.replace(updated, completed=datetime.now(timezone.utc))
+
+    async with OFocusStore.from_env() as store:
+        result = await store.update_project(updated)
+
+    return _text(result)
+
+
+async def _handle_complete_project(args: dict[str, Any]) -> list[TextContent]:
+    query = str(args.get("query", ""))
+    model = await _load_model()
+    project = model.projects.get(query)
+    if project is None:
+        needle = query.lower()
+        matches = [candidate for candidate in model.projects.values() if needle in candidate.name.lower()]
+        if not matches:
+            return _text({"error": f"No project matching {query!r}"})
+        if len(matches) > 1:
+            return _text({"error": f"Multiple projects match {query!r}"})
+        project = matches[0]
+
+    async with OFocusStore.from_env() as store:
+        result = await store.complete_project(project)
+
+    return _text(result)
 
 
 async def _handle_list_projects(args: dict[str, Any]) -> list[TextContent]:
