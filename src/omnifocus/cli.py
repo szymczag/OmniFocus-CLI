@@ -18,7 +18,7 @@ import asyncio
 import logging
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import click
@@ -28,7 +28,6 @@ from omnifocus.errors import (
     OFBundleNotFound,
     OFEncryptionError,
     OFError,
-    OFTaskNotFound,
     OFWebDAVError,
 )
 from omnifocus.formatting import (
@@ -38,9 +37,8 @@ from omnifocus.formatting import (
     render_tasks_table,
 )
 from omnifocus.fuzzy import find_tasks
-from omnifocus.models import OFModel
+from omnifocus.models import OFModel, Project, Task
 from omnifocus.store import OFocusStore
-from omnifocus.writer import TaskWriter
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +121,67 @@ async def _get_model(force_refresh: bool = False) -> OFModel:
         raise click.ClickException(f"Bundle not found: {exc}") from exc
     except OFError as exc:
         raise click.ClickException(str(exc)) from exc
+
+
+def _match_active_project(model: OFModel, query: str) -> Project:
+    """Resolve a single active project by fuzzy substring."""
+    needle = query.lower()
+    matches = [
+        project for project in model.projects.values()
+        if needle in project.name.lower() and project.status == "active"
+    ]
+    if not matches:
+        raise click.ClickException(f"No active project matching {query!r}")
+    if len(matches) > 1:
+        names = ", ".join(match.name for match in matches[:5])
+        raise click.ClickException(
+            f"Multiple projects match {query!r}: {names}. Be more specific."
+        )
+    return matches[0]
+
+
+def _match_project(model: OFModel, query: str) -> Project:
+    """Resolve a single project by fuzzy substring."""
+    needle = query.lower()
+    matches = [project for project in model.projects.values() if needle in project.name.lower()]
+    if not matches:
+        raise click.ClickException(f"No project matching {query!r}")
+    if len(matches) > 1:
+        names = ", ".join(match.name for match in matches[:5])
+        raise click.ClickException(
+            f"Multiple projects match {query!r}: {names}. Be more specific."
+        )
+    return matches[0]
+
+
+def _match_folder_id(model: OFModel, query: str) -> str:
+    """Resolve a folder id by fuzzy substring."""
+    needle = query.lower()
+    matches = [folder for folder in model.folders.values() if needle in folder.name.lower()]
+    if not matches:
+        raise click.ClickException(f"No folder matching {query!r}")
+    if len(matches) > 1:
+        names = ", ".join(match.name for match in matches[:5])
+        raise click.ClickException(
+            f"Multiple folders match {query!r}: {names}. Be more specific."
+        )
+    return matches[0].id
+
+
+def _match_task(model: OFModel, query: str) -> Task:
+    """Resolve a single active task by id or fuzzy name."""
+    results = find_tasks(query, model.active_tasks)
+    if not results:
+        raise click.ClickException(f"No active task matching {query!r}")
+    if len(results) > 1 and results[0].score < 0.8:
+        choices = "\n".join(
+            f"  [{i + 1}] {result.task.id}  {result.task.name}"
+            for i, result in enumerate(results[:5])
+        )
+        raise click.ClickException(
+            f"Ambiguous match for {query!r}. Did you mean one of:\n{choices}"
+        )
+    return results[0].task
 
 
 # ---------------------------------------------------------------------------
@@ -279,42 +338,25 @@ def add_cmd(
         inbox = True
 
         if project_name:
-            needle = project_name.lower()
-            matches = [
-                p for p in model.projects.values()
-                if needle in p.name.lower() and p.status == "active"
-            ]
-            if not matches:
-                raise click.ClickException(
-                    f"No active project matching {project_name!r}"
-                )
-            if len(matches) > 1:
-                names = ", ".join(m.name for m in matches[:5])
-                raise click.ClickException(
-                    f"Multiple projects match {project_name!r}: {names}. "
-                    "Be more specific."
-                )
-            parent_task_id = matches[0].id
+            parent_task_id = _match_active_project(model, project_name).id
             inbox = False
-
-        writer = TaskWriter()
-        fname, data, new_id = writer.add_task(
-            name=name,
-            parent_task_id=parent_task_id,
-            inbox=inbox,
-            flagged=flagged,
-            due_dt=due_dt,
-            note=note or "",
-        )
 
         try:
             async with OFocusStore.from_env() as store:
-                store.invalidate_cache()
-                await store._client.put_file(fname, data)
+                result = await store.add_task(
+                    name=name,
+                    parent_task_id=parent_task_id,
+                    inbox=inbox,
+                    flagged=flagged,
+                    due_dt=due_dt,
+                    note=note or "",
+                )
         except OFWebDAVError as exc:
             raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
 
-        click.echo(f"Added task: {name!r} (id={new_id})")
+        click.echo(f"Added task: {name!r} (id={result['task_id']})")
 
     _run(_run_add())
 
@@ -335,35 +377,18 @@ def done_cmd(query: str, yes: bool) -> None:
 
     async def _run_done() -> None:
         model = await _get_model()
-        active = model.active_tasks
-
-        results = find_tasks(query, active)
-        if not results:
-            raise click.ClickException(f"No active task matching {query!r}")
-
-        if len(results) > 1 and results[0].score < 0.8:
-            choices = "\n".join(
-                f"  [{i + 1}] {r.task.id}  {r.task.name}"
-                for i, r in enumerate(results[:5])
-            )
-            raise click.ClickException(
-                f"Ambiguous match for {query!r}. Did you mean one of:\n{choices}"
-            )
-
-        task = results[0].task
+        task = _match_task(model, query)
 
         if not yes:
             click.confirm(f"Complete task: {task.name!r}?", abort=True)
 
-        writer = TaskWriter()
-        fname, data = writer.complete_task(task)
-
         try:
             async with OFocusStore.from_env() as store:
-                store.invalidate_cache()
-                await store._client.put_file(fname, data)
+                await store.complete_task(task)
         except OFWebDAVError as exc:
             raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
 
         click.echo(f"Completed: {task.name!r}")
 
@@ -391,3 +416,137 @@ def projects_cmd(status: str, fmt: str) -> None:
             render_project_tree(model.folders, model.projects, status_filter=status)
 
     _run(_run_projects())
+
+
+@cli.command("project-add")
+@click.argument("name")
+@click.option("--folder", "folder_name", default=None, metavar="NAME")
+@click.option("--note", default="", metavar="TEXT")
+@click.option("--flagged", is_flag=True)
+@click.option("--due", "due_str", default=None, metavar="DATE")
+@click.option("--defer", "defer_str", default=None, metavar="DATE")
+@click.option(
+    "--status",
+    type=click.Choice(["active", "inactive"]),
+    default="active",
+)
+def project_add_cmd(
+    name: str,
+    folder_name: Optional[str],
+    note: str,
+    flagged: bool,
+    due_str: Optional[str],
+    defer_str: Optional[str],
+    status: str,
+) -> None:
+    """Add a new project."""
+
+    async def _run_project_add() -> None:
+        model = await _get_model()
+        folder_id = _match_folder_id(model, folder_name) if folder_name else None
+        due_dt = _parse_due(due_str) if due_str else None
+        defer_dt = _parse_due(defer_str) if defer_str else None
+        try:
+            async with OFocusStore.from_env() as store:
+                result = await store.add_project(
+                    name=name,
+                    folder_id=folder_id,
+                    status=status,
+                    flagged=flagged,
+                    due_dt=due_dt,
+                    start_dt=defer_dt,
+                    note=note,
+                )
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Added project: {name!r} (id={result['project_id']})")
+
+    _run(_run_project_add())
+
+
+@cli.command("project-update")
+@click.argument("query")
+@click.option("--name", "new_name", default=None, metavar="NAME")
+@click.option("--note", default=None, metavar="TEXT")
+@click.option("--flagged/--unflagged", default=None)
+@click.option("--due", "due_str", default=None, metavar="DATE")
+@click.option("--clear-due", is_flag=True)
+@click.option("--defer", "defer_str", default=None, metavar="DATE")
+@click.option("--clear-defer", is_flag=True)
+@click.option(
+    "--status",
+    type=click.Choice(["active", "inactive", "done", "dropped"]),
+    default=None,
+)
+def project_update_cmd(
+    query: str,
+    new_name: Optional[str],
+    note: Optional[str],
+    flagged: Optional[bool],
+    due_str: Optional[str],
+    clear_due: bool,
+    defer_str: Optional[str],
+    clear_defer: bool,
+    status: Optional[str],
+) -> None:
+    """Update an existing project."""
+
+    async def _run_project_update() -> None:
+        model = await _get_model()
+        project = _match_project(model, query)
+        due_dt = None if clear_due else (_parse_due(due_str) if due_str else project.due)
+        defer_dt = None if clear_defer else (
+            _parse_due(defer_str) if defer_str else project.start
+        )
+        now = datetime.now(timezone.utc)
+        updated = Project(
+            id=project.id,
+            name=new_name or project.name,
+            folder_id=project.folder_id,
+            status=status or project.status,
+            singleton=project.singleton,
+            rank=project.rank,
+            added=project.added,
+            modified=now,
+            flagged=project.flagged if flagged is None else flagged,
+            due=due_dt,
+            start=defer_dt,
+            note=project.note if note is None else note,
+            completed=now if (status == "done" and project.completed is None) else project.completed,
+            tag_ids=project.tag_ids,
+        )
+        try:
+            async with OFocusStore.from_env() as store:
+                await store.update_project(updated)
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Updated project: {updated.name!r}")
+
+    _run(_run_project_update())
+
+
+@cli.command("project-done")
+@click.argument("query")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+def project_done_cmd(query: str, yes: bool) -> None:
+    """Mark a project complete."""
+
+    async def _run_project_done() -> None:
+        model = await _get_model()
+        project = _match_project(model, query)
+        if not yes:
+            click.confirm(f"Complete project: {project.name!r}?", abort=True)
+        try:
+            async with OFocusStore.from_env() as store:
+                await store.complete_project(project)
+        except OFWebDAVError as exc:
+            raise click.ClickException(f"WebDAV error: {exc}") from exc
+        except OFError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Completed project: {project.name!r}")
+
+    _run(_run_project_done())
