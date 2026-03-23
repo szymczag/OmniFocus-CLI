@@ -20,8 +20,14 @@ Tools
 
 Usage::
 
-    # Default: MCP server mode (stdin/stdout)
+    # Native Python entry point
     of-mcp
+
+    # Container default: MCP server mode (stdin/stdout)
+    podman run --rm -i of
+
+    # Explicit container MCP mode
+    podman run --rm -i of mcp
 
     # In Claude MCP config (settings.json):
     {
@@ -33,7 +39,7 @@ Usage::
                    "-e", "OF_WEBDAV_USER",
                    "-e", "OF_WEBDAV_PASS",
                    "-e", "OF_ENCRYPTION_PASSPHRASE",
-                   "omnifocus-cli:latest"]
+                   "of:latest"]
         }
       }
     }

@@ -818,6 +818,16 @@ class TestHelp:
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
         assert "OmniFocus" in result.output
+        assert "Maciej Szymczak" in result.output
+        assert "Environment:" in result.output
+        assert "Common commands:" in result.output
+        assert "Container usage:" in result.output
+
+    def test_main_version(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--version"])
+        assert result.exit_code == 0
+        assert "of, version 1.0.0" in result.output
 
     def test_tasks_help(self) -> None:
         runner = CliRunner()

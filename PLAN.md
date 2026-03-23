@@ -30,7 +30,7 @@ Credentials passed via environment variables; no host filesystem access required
 
 ```
 omnifocus-cli/
-├── Containerfile                   # Podman image (python:3.12-slim)
+├── Containerfile                   # Podman image (python:3.14-slim)
 ├── pyproject.toml                  # click, rich, httpx, cryptography, mcp
 ├── src/omnifocus/
 │   ├── models.py                   # Task, Project, Folder, Tag dataclasses
@@ -183,7 +183,7 @@ Tools exposed via `mcp` SDK (stdio transport for Podman):
 ## Containerfile
 
 ```dockerfile
-FROM python:3.12-slim
+FROM python:3.14-slim
 WORKDIR /app
 COPY pyproject.toml .
 COPY src/ src/
@@ -194,8 +194,8 @@ podman run --rm \
   -v "$PWD/.of-cache":/cache \
   -e OF_CACHE_DIR=/cache \
   ...
-ENTRYPOINT ["of-mcp"]   # default: MCP server mode
-# override with: podman run ... of tasks --inbox
+ENTRYPOINT ["python", "-m", "omnifocus.launcher"]   # no args: MCP, args: CLI
+# CLI example: podman run ... of tasks --inbox
 ```
 
 Claude MCP config (`~/.claude/settings.json`):
@@ -209,7 +209,7 @@ Claude MCP config (`~/.claude/settings.json`):
                "-e", "OF_WEBDAV_USER",
                "-e", "OF_WEBDAV_PASS",
                "-e", "OF_ENCRYPTION_PASSPHRASE",
-               "omnifocus-cli:latest"]
+               "of:latest"]
     }
   }
 }
@@ -250,7 +250,7 @@ Claude MCP config (`~/.claude/settings.json`):
 pytest --cov=src/omnifocus --cov-fail-under=100 -v
 
 # Build container
-podman build -t omnifocus-cli .
+podman build -t of .
 
 # Test sync (reads WebDAV, decrypts, parses)
 podman run --rm \
@@ -258,7 +258,7 @@ podman run --rm \
   -e OF_CACHE_DIR=/cache \
   -e OF_WEBDAV_URL -e OF_WEBDAV_USER -e OF_WEBDAV_PASS \
   -e OF_ENCRYPTION_PASSPHRASE \
-  omnifocus-cli of tasks --inbox
+  of tasks --inbox
 
 # Test MCP via Claude
 # Add to ~/.claude/settings.json, then: /mcp

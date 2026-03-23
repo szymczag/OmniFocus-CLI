@@ -7,10 +7,22 @@ name = "omnifocus-cli"
 version = "1.0.0"
 description = "Independent CLI and MCP server for OmniFocus 4, running in Podman"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = { text = "MIT" }
+keywords = ["omnifocus", "cli", "mcp", "podman", "webdav", "productivity"]
 authors = [{ name = "Maciej Szymczak", email = "maciej@szymczak.at" }]
 maintainers = [{ name = "Maciej Szymczak", email = "maciej@szymczak.at" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Utilities",
+]
 dependencies = [
     "click>=8.3.1,<9.0",
     "rich>=14.3.3,<15.0",
@@ -33,6 +45,12 @@ dev = [
 [project.scripts]
 of = "omnifocus.cli:cli"
 of-mcp = "omnifocus.mcp_server:main"
+
+[project.urls]
+Homepage = "https://github.com/szymczag/OmniFocus-CLI"
+Repository = "https://github.com/szymczag/OmniFocus-CLI"
+Issues = "https://github.com/szymczag/OmniFocus-CLI/issues"
+Changelog = "https://github.com/szymczag/OmniFocus-CLI/releases"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/omnifocus"]
@@ -57,7 +75,7 @@ exclude_lines = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "S", "B", "A", "C4", "T20"]
@@ -65,9 +83,9 @@ ignore = ["S101"]  # assert in tests is fine
 
 [tool.black]
 line-length = 100
-target-version = ["py312"]
+target-version = ["py314"]
 
 [tool.mypy]
 strict = true
-python_version = "3.12"
+python_version = "3.14"
 files = ["src/omnifocus"]

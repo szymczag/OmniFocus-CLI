@@ -2,7 +2,7 @@
 # Author: Maciej Szymczak <maciej@szymczak.at>
 #
 # Build runtime image:
-#   podman build --target runtime -t omnifocus-cli .
+#   podman build --target runtime -t of .
 #
 # Build test image and run tests:
 #   podman build --target test -t omnifocus-cli-test .
@@ -14,20 +14,20 @@
 #     -e OF_CACHE_DIR=/cache \
 #     -e OF_WEBDAV_URL -e OF_WEBDAV_USER -e OF_WEBDAV_PASS \
 #     -e OF_ENCRYPTION_PASSPHRASE \
-#     omnifocus-cli of tasks --inbox
+#     of tasks --inbox
 #
-# MCP server (default ENTRYPOINT):
+# MCP server (default container command):
 #   podman run --rm -i \
 #     -v "$PWD/.of-cache":/cache \
 #     -e OF_CACHE_DIR=/cache \
 #     -e OF_WEBDAV_URL -e OF_WEBDAV_USER -e OF_WEBDAV_PASS \
 #     -e OF_ENCRYPTION_PASSPHRASE \
-#     omnifocus-cli
+#     of
 
 # ---------------------------------------------------------------------------
 # Builder stage — install everything into /install
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 WORKDIR /build
 
@@ -39,7 +39,7 @@ RUN pip install --no-cache-dir --prefix=/install -e .
 # ---------------------------------------------------------------------------
 # Runtime stage — minimal image, no build tools
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 # Security: run as non-root user
 RUN useradd --uid 1001 --no-create-home --shell /bin/false appuser
@@ -62,15 +62,15 @@ USER appuser
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Default: MCP server mode (stdio transport for Claude integration).
-# Using CMD (not ENTRYPOINT) so the CLI can be invoked by passing a
-# different command: podman run --rm omnifocus-cli of tasks --inbox
-CMD ["of-mcp"]
+# Default launcher: no args -> MCP mode, CLI args -> of CLI.
+# Using ENTRYPOINT so `podman run --rm of --help` passes `--help` to the
+# launcher instead of trying to execute it as a binary inside the container.
+ENTRYPOINT ["python", "-m", "omnifocus.launcher"]
 
 # ---------------------------------------------------------------------------
 # Test stage — includes dev dependencies and test suite
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS test
+FROM python:3.14-slim AS test
 
 WORKDIR /app
 

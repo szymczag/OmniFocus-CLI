@@ -27,6 +27,7 @@ from datetime import UTC, datetime, timedelta
 
 import click
 
+from omnifocus import __version__
 from omnifocus.errors import (
     OFBundleNotFound,
     OFEncryptionError,
@@ -42,6 +43,32 @@ from omnifocus.formatting import (
 from omnifocus.fuzzy import find_tasks
 from omnifocus.models import OFModel, Project, Task
 from omnifocus.store import OFocusStore
+
+_ROOT_HELP = """OmniFocus CLI for OmniFocus 4.
+
+Independent task and project management over WebDAV sync and bundle decryption.
+
+Author: Maciej Szymczak <maciej@szymczak.at>
+
+Environment:
+  OF_WEBDAV_URL             WebDAV bundle URL (required)
+  OF_WEBDAV_USER            WebDAV username (optional override)
+  OF_WEBDAV_PASS            WebDAV password (optional override)
+  OF_ENCRYPTION_PASSPHRASE  Encryption passphrase (defaults to WebDAV password)
+  OF_CACHE_DIR              Cache directory (default: /tmp/of-cache)
+
+Common commands:
+  of sync
+  of tasks --inbox
+  of add "Buy milk" --project Errands
+  of done "Write tests" --yes
+  of projects --status active
+
+Container usage:
+  podman run --rm IMAGE sync
+  podman run --rm IMAGE add "Buy milk"
+  podman run --rm -i IMAGE
+"""
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -186,19 +213,13 @@ def _match_task(model: OFModel, query: str) -> Task:
 # ---------------------------------------------------------------------------
 
 
-@click.group()
+@click.group(
+    context_settings={"help_option_names": ["-h", "--help"]},
+    help=_ROOT_HELP,
+)
+@click.version_option(version=__version__, prog_name="of")
 def cli() -> None:
-    """OmniFocus 4 command-line interface.
-
-    Reads credentials from environment variables:
-
-    \b
-    OF_WEBDAV_URL             WebDAV bundle URL (required)
-    OF_WEBDAV_USER            WebDAV username (or embed in URL)
-    OF_WEBDAV_PASS            WebDAV password (or embed in URL)
-    OF_ENCRYPTION_PASSPHRASE  Passphrase (defaults to WebDAV password)
-    OF_CACHE_DIR              Cache directory (default: /tmp/of-cache)
-    """
+    """Run the OmniFocus task and project CLI."""
 
 
 # ---------------------------------------------------------------------------
