@@ -51,7 +51,7 @@ class TestGenerateId:
 
 class TestTimestampFormatting:
     def test_format_ts(self) -> None:
-        assert _format_ts(NOW) == "20260322T154011Z"
+        assert _format_ts(NOW) == "20260322T154011"
 
     def test_format_dt_utc(self) -> None:
         result = _format_dt_utc(NOW)
@@ -368,11 +368,11 @@ class TestTaskWriter:
     def test_add_task_filename_format(self) -> None:
         writer = TaskWriter(client_id="cli01", parent_id="parent01")
         fname, _, _ = writer.add_task("Test task")
-        # Format: 20260322T154011Z=cli01+parent01.zip
+        # Format: 20260322T154011=cli01+parent01.zip
         assert "=cli01+parent01.zip" in fname
         # Timestamp part must be numeric-ish
         ts_part = fname.split("=")[0]
-        assert len(ts_part) == 16 and ts_part.endswith("Z")
+        assert len(ts_part) == 15 and not ts_part.endswith("Z")
 
     def test_add_task_xml_has_task_element(self) -> None:
         writer = TaskWriter(client_id="cli01", parent_id="parent01")

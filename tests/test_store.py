@@ -486,7 +486,7 @@ class TestWritePath:
         await store.add_task(name="First task")
         client.list_bundle.return_value = [
             "00000000000000=base.zip",
-            "20260322T154011Z=remote123+parent123.zip",
+            "20260322T154011=remote123+parent123.zip",
         ]
 
         await store.add_task(name="Second task")
@@ -659,7 +659,7 @@ class TestWritePath:
 
         with pytest.raises(OFEncryptionError, match="Encrypted bundle has no writable key slot"):
             await store._upload_transaction(  # noqa: SLF001
-                "20260322T154011Z=client+parent.zip",
+                "20260322T154011=client+parent.zip",
                 b"payload",
                 encrypted_plist=b"plist",
                 key_slot=None,
@@ -699,7 +699,7 @@ class TestWritePath:
         monkeypatch.setattr(
             "omnifocus.store.latest_transaction_ref",
             lambda _: TransactionRef(
-                filename="20260322T154011Z=remote123+.zip",
+                filename="20260322T154011=remote123+.zip",
                 client_id="remote123",
                 parent_id="",
             ),
@@ -715,7 +715,7 @@ class TestWritePath:
         store, client = _make_store(tmp_path)
 
         await store._upload_transaction(  # noqa: SLF001
-            "20260322T154011Z=client+parent.zip",
+            "20260322T154011=client+parent.zip",
             make_zip(_EMPTY_XML),
             encrypted_plist=None,
             key_slot=None,

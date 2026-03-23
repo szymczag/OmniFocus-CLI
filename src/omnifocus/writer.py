@@ -8,7 +8,7 @@ Transaction filename format::
 
     <UTC_ISO8601>=<client_id>+<parent_id>.zip
 
-where ``<UTC_ISO8601>`` is a compact timestamp like ``20260322T154011Z``.
+where ``<UTC_ISO8601>`` is a compact timestamp like ``20260322T154011``.
 
 Usage::
 
@@ -22,7 +22,7 @@ Usage::
         inbox=True,
         flagged=False,
     )
-    # fname = "20260322T154011Z=myCLI01+<parent_id>.zip"
+    # fname = "20260322T154011=myCLI01+<parent_id>.zip"
 """
 
 from __future__ import annotations
@@ -70,9 +70,9 @@ def _format_ts(dt: datetime) -> str:
         dt: A UTC-aware datetime.
 
     Returns:
-        String like ``"20260322T154011Z"``.
+        String like ``"20260322T154011"``.
     """
-    return dt.strftime("%Y%m%dT%H%M%SZ")
+    return dt.strftime("%Y%m%dT%H%M%S")
 
 
 def _format_dt_utc(dt: datetime) -> str:
