@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+__author__ = "Maciej Szymczak <maciej@szymczak.at>"
+
 import pytest
 
 from omnifocus.errors import OFBundleNotFound

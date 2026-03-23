@@ -51,6 +51,8 @@ Usage::
 
 from __future__ import annotations
 
+__author__ = "Maciej Szymczak <maciej@szymczak.at>"
+
 import dataclasses
 import json
 import logging

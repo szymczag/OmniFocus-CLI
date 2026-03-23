@@ -26,6 +26,8 @@ Usage::
 
 from __future__ import annotations
 
+__author__ = "Maciej Szymczak <maciej@szymczak.at>"
+
 from collections.abc import Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+__author__ = "Maciej Szymczak <maciej@szymczak.at>"
+
 import dataclasses
 import json
 from datetime import UTC, datetime
@@ -20,7 +22,6 @@ from omnifocus.mcp_server import (
     _handle_list_tasks,
     _handle_search_tasks,
     _handle_sync_now,
-    _handle_sync_status,
     _handle_update_project,
     _handle_update_task,
     _serialise,
@@ -147,14 +148,6 @@ def _mock_store(model: OFModel | None = None) -> MagicMock:
     m.invalidate_cache = MagicMock()
     m._client = MagicMock()
     m._client.put_file = AsyncMock(return_value=None)
-    m.sync_status = AsyncMock(
-        return_value={
-            "last_synced": "2026-03-22T12:00:00+00:00",
-            "cached": True,
-            "cache_age_seconds": 5.0,
-            "cache_valid": True,
-        }
-    )
     return m
 
 
@@ -171,9 +164,9 @@ def _parse_response(contents: list) -> Any:
 
 class TestListTools:
     @pytest.mark.asyncio
-    async def test_returns_thirteen_tools(self) -> None:
+    async def test_returns_twelve_tools(self) -> None:
         tools = await list_tools()
-        assert len(tools) == 13
+        assert len(tools) == 12
 
     @pytest.mark.asyncio
     async def test_tool_names(self) -> None:
@@ -192,7 +185,6 @@ class TestListTools:
             "list_projects",
             "list_folders",
             "sync_now",
-            "sync_status",
         }
         assert names == expected
 
@@ -755,7 +747,7 @@ class TestHandleListFolders:
 
 
 # ---------------------------------------------------------------------------
-# sync_now / sync_status
+# sync_now
 # ---------------------------------------------------------------------------
 
 
@@ -768,17 +760,6 @@ class TestHandleSyncNow:
         data = _parse_response(result)
         assert data["status"] == "synced"
         assert "tasks" in data
-
-
-class TestHandleSyncStatus:
-    @pytest.mark.asyncio
-    async def test_returns_status(self) -> None:
-        mock = _mock_store()
-        with patch("omnifocus.mcp_server.OFocusStore.from_env", return_value=mock):
-            result = await _handle_sync_status({})
-        data = _parse_response(result)
-        assert "cached" in data
-        assert data["cache_valid"] is True
 
 
 # ---------------------------------------------------------------------------

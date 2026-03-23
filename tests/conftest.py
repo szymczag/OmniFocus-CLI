@@ -6,6 +6,8 @@ All fixtures are hermetic: no network I/O, no filesystem writes outside of
 
 from __future__ import annotations
 
+__author__ = "Maciej Szymczak <maciej@szymczak.at>"
+
 import io
 import zipfile
 from pathlib import Path

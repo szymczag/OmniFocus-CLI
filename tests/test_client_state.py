@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+__author__ = "Maciej Szymczak <maciej@szymczak.at>"
+
 import plistlib
 from datetime import UTC, datetime
 

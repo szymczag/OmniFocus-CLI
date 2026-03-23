@@ -13,6 +13,8 @@ with the registered clients' ``tailIdentifiers`` values.
 
 from __future__ import annotations
 
+__author__ = "Maciej Szymczak <maciej@szymczak.at>"
+
 from dataclasses import dataclass
 from datetime import UTC, datetime
 

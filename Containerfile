@@ -1,4 +1,5 @@
 # Containerfile for omnifocus-cli
+# Author: Maciej Szymczak <maciej@szymczak.at>
 #
 # Build runtime image:
 #   podman build --target runtime -t omnifocus-cli .
@@ -33,7 +34,7 @@ WORKDIR /build
 COPY pyproject.toml README.md ./
 COPY src/ src/
 
-RUN pip install --no-cache-dir --prefix=/install -e ".[mcp]"
+RUN pip install --no-cache-dir --prefix=/install -e .
 
 # ---------------------------------------------------------------------------
 # Runtime stage — minimal image, no build tools

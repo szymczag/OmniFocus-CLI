@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+__author__ = "Maciej Szymczak <maciej@szymczak.at>"
+
 import io
 import xml.etree.ElementTree as ET
 import zipfile

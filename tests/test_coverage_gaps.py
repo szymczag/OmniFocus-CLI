@@ -7,6 +7,8 @@ path needed to exercise the missing line/branch.
 
 from __future__ import annotations
 
+__author__ = "Maciej Szymczak <maciej@szymczak.at>"
+
 import xml.etree.ElementTree as ET
 from datetime import UTC, date, datetime
 from io import StringIO

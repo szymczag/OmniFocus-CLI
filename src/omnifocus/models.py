@@ -14,6 +14,8 @@ Date conventions
 
 from __future__ import annotations
 
+__author__ = "Maciej Szymczak <maciej@szymczak.at>"
+
 from dataclasses import dataclass, field
 from datetime import datetime
 

@@ -29,6 +29,8 @@ deriving AES and HMAC keys from a passphrase are in
 
 from __future__ import annotations
 
+__author__ = "Maciej Szymczak <maciej@szymczak.at>"
+
 from omnifocus.errors import OFEncryptionError
 
 # ---- Constants -----------------------------------------------------------

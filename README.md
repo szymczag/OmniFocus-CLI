@@ -2,6 +2,9 @@
 
 Independent CLI and MCP server for OmniFocus 4.
 
+Author: Maciej Szymczak <maciej@szymczak.at>
+Release: v1.0.0
+
 Runs in a **Podman container** — no macOS dependencies, no AppleScript.
 Syncs directly from a **custom WebDAV server**, decrypts the `.ofocus` bundle,
 and exposes task management as a **Claude MCP server**.
@@ -20,7 +23,7 @@ podman run --rm \
   -v "$PWD/.of-cache":/cache \
   -e OF_CACHE_DIR=/cache \
   -e OF_WEBDAV_URL=https://user:pass@dav.example.com/OmniFocus.ofocus/ \
-  omnifocus-cli of --debug sync
+  omnifocus-cli of sync
 
 podman run --rm \
   -v "$PWD/.of-cache":/cache \
@@ -42,14 +45,17 @@ podman run --rm \
 ## Commands
 
 ```
-of [--debug] sync                   Pull latest bundle from WebDAV
-of [--debug] tasks [--inbox] [--today] [--flagged] [--due] [--project NAME]
-of [--debug] add NAME [--project NAME] [--due DATE] [--flagged] [--note TEXT]
-of [--debug] done QUERY [-y]
-of [--debug] projects [--status active|all] [--format tree|json]
+of sync
+of tasks [--inbox] [--today] [--flagged] [--due] [--project NAME]
+of add NAME [--project NAME] [--due DATE] [--flagged] [--note TEXT]
+of done QUERY [-y]
+of task-update QUERY [options]
+of task-drop QUERY [-y]
+of projects [--status active|all|inactive] [--format tree|json]
+of project-add NAME [options]
+of project-update QUERY [options]
+of project-done QUERY [-y]
 ```
-
-`--debug` prints verbose logs to stderr (WebDAV requests, decryption, parsing).
 
 ## MCP server (Claude integration)
 

@@ -6,4 +6,6 @@ and exposes task management via a Click CLI and an MCP server for Claude.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__author__ = "Maciej Szymczak <maciej@szymczak.at>"
+
+__version__ = "1.0.0"

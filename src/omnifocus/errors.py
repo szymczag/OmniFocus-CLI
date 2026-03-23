@@ -7,6 +7,8 @@ able to distinguish specific failure modes.
 
 from __future__ import annotations
 
+__author__ = "Maciej Szymczak <maciej@szymczak.at>"
+
 
 class OFError(Exception):
     """Base class for all omnifocus-cli errors."""

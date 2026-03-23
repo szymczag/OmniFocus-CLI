@@ -1,5 +1,7 @@
 # omnifocus-cli: Containerized Independent CLI + MCP Server
 
+Author: Maciej Szymczak <maciej@szymczak.at>
+
 ## Context
 
 Build a fully independent Python CLI for OmniFocus 4 that:

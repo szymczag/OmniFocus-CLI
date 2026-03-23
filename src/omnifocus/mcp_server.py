@@ -17,7 +17,6 @@ Tools
 ``list_projects``   List projects (optionally filtered by status).
 ``list_folders``    List all folders.
 ``sync_now``        Trigger a full WebDAV sync.
-``sync_status``     Report last sync time and cache state.
 
 Usage::
 
@@ -41,6 +40,8 @@ Usage::
 """
 
 from __future__ import annotations
+
+__author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
 import asyncio
 import dataclasses
@@ -291,11 +292,6 @@ async def list_tools() -> list[Tool]:
             description="Trigger a full sync from the WebDAV server.",
             inputSchema={"type": "object", "properties": {}},
         ),
-        Tool(
-            name="sync_status",
-            description="Report last sync time and cache state.",
-            inputSchema={"type": "object", "properties": {}},
-        ),
     ]
 
 
@@ -320,7 +316,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "list_projects": _handle_list_projects,
         "list_folders": _handle_list_folders,
         "sync_now": _handle_sync_now,
-        "sync_status": _handle_sync_status,
     }
     handler = handlers.get(name)
     if handler is None:
@@ -604,12 +599,6 @@ async def _handle_sync_now(args: dict[str, Any]) -> list[TextContent]:
             "folders": len(model.folders),
         }
     )
-
-
-async def _handle_sync_status(args: dict[str, Any]) -> list[TextContent]:
-    async with OFocusStore.from_env() as store:
-        status = await store.sync_status()
-    return _text(status)
 
 
 # ---------------------------------------------------------------------------

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+__author__ = "Maciej Szymczak <maciej@szymczak.at>"
+
 import plistlib
 import struct
 
@@ -80,7 +82,7 @@ class TestParseFileHeader:
         return header_core + b"\x00" * pad_len
 
     def test_valid_header_returns_key_id_and_offset(self) -> None:
-        data = self._make_header(info_length=2, key_id=1) + b"\xCC" * 100
+        data = self._make_header(info_length=2, key_id=1) + b"\xcc" * 100
         kid, offset = parse_file_header(data)
         assert kid == 1
         # magic(20) + info_length(2) + 2 = 24; pad to 32
@@ -88,7 +90,7 @@ class TestParseFileHeader:
 
     def test_offset_aligned_to_16(self) -> None:
         # info_length=0 → raw_offset=22 → pad to 32
-        data = self._make_header(info_length=0, key_id=5) + b"\xCC" * 100
+        data = self._make_header(info_length=0, key_id=5) + b"\xcc" * 100
         kid, offset = parse_file_header(data)
         assert kid == 5
         assert offset == 32
@@ -96,7 +98,7 @@ class TestParseFileHeader:
 
     def test_info_length_18_offset_48(self) -> None:
         # info_length=18 → raw_offset=20+2+18=40 → 40%16=8 → padded to 48
-        data = self._make_header(info_length=18, key_id=2) + b"\xCC" * 100
+        data = self._make_header(info_length=18, key_id=2) + b"\xcc" * 100
         _, offset = parse_file_header(data)
         assert offset == 48
 
@@ -110,7 +112,7 @@ class TestParseFileHeader:
             parse_file_header(data)
 
     def test_key_id_zero(self) -> None:
-        data = self._make_header(info_length=2, key_id=0) + b"\xCC" * 100
+        data = self._make_header(info_length=2, key_id=0) + b"\xcc" * 100
         kid, _ = parse_file_header(data)
         assert kid == 0
 
@@ -152,8 +154,8 @@ class TestEncryptDecryptRoundTrip:
 
     def test_single_byte(self) -> None:
         aes_key, hmac_key = _make_keys()
-        enc = encrypt_file(b"\xFF", aes_key, hmac_key)
-        assert decrypt_file(enc, aes_key, hmac_key) == b"\xFF"
+        enc = encrypt_file(b"\xff", aes_key, hmac_key)
+        assert decrypt_file(enc, aes_key, hmac_key) == b"\xff"
 
     def test_unicode_via_passphrase(self) -> None:
         """End-to-end with create_encrypted_bundle using a unicode passphrase."""
@@ -362,7 +364,7 @@ class TestParseSlots:
     def test_unknown_slot_type_is_skipped(self) -> None:
         """Slot type 5 (PlaintextMask) is not AES_CTR_HMAC and must be skipped."""
         # type=5, len_units=8 (32 bytes data), slot_id=1
-        blob = bytes([5, 8]) + b"\x00\x01" + b"\xAA" * 32 + b"\x00"
+        blob = bytes([5, 8]) + b"\x00\x01" + b"\xaa" * 32 + b"\x00"
         slots = _parse_slots(blob)
         assert 1 not in slots
 
@@ -375,7 +377,7 @@ class TestParseSlots:
     def test_slot_data_too_short_is_skipped(self) -> None:
         """AES_CTR_HMAC slot with fewer than 32 bytes of data is ignored."""
         # type=3, len_units=4 (16 bytes data) — needs >= 32 bytes for AES+HMAC keys
-        blob = bytes([3, 4]) + b"\x00\x01" + b"\xAA" * 16 + b"\x00"
+        blob = bytes([3, 4]) + b"\x00\x01" + b"\xaa" * 16 + b"\x00"
         slots = _parse_slots(blob)
         assert 1 not in slots
 
