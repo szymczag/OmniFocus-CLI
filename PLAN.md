@@ -94,7 +94,7 @@ OF_WEBDAV_URL=https://webdav.example.com/omnifocus/
 OF_WEBDAV_USER=username
 OF_WEBDAV_PASS=password
 OF_ENCRYPTION_PASSPHRASE=my-passphrase   # if encrypted
-OF_CACHE_DIR=/tmp/of-cache               # writable cache inside container
+OF_CACHE_DIR=/cache                      # recommended mounted cache directory
 ```
 
 ---
@@ -186,7 +186,12 @@ WORKDIR /app
 COPY pyproject.toml .
 COPY src/ src/
 RUN pip install -e ".[mcp]"
-ENV OF_CACHE_DIR=/tmp/of-cache
+mkdir -p .of-cache
+
+podman run --rm \
+  -v "$PWD/.of-cache":/cache \
+  -e OF_CACHE_DIR=/cache \
+  ...
 ENTRYPOINT ["of-mcp"]   # default: MCP server mode
 # override with: podman run ... of tasks --inbox
 ```
@@ -247,6 +252,8 @@ podman build -t omnifocus-cli .
 
 # Test sync (reads WebDAV, decrypts, parses)
 podman run --rm \
+  -v "$PWD/.of-cache":/cache \
+  -e OF_CACHE_DIR=/cache \
   -e OF_WEBDAV_URL -e OF_WEBDAV_USER -e OF_WEBDAV_PASS \
   -e OF_ENCRYPTION_PASSPHRASE \
   omnifocus-cli of tasks --inbox

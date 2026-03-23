@@ -12,12 +12,19 @@ and exposes task management as a **Claude MCP server**.
 # Build
 podman build --target runtime -t omnifocus-cli .
 
+# Create persistent cache
+mkdir -p .of-cache
+
 # Sync and list tasks (credentials embedded in URL)
 podman run --rm \
+  -v "$PWD/.of-cache":/cache \
+  -e OF_CACHE_DIR=/cache \
   -e OF_WEBDAV_URL=https://user:pass@dav.example.com/OmniFocus.ofocus/ \
   omnifocus-cli of --debug sync
 
 podman run --rm \
+  -v "$PWD/.of-cache":/cache \
+  -e OF_CACHE_DIR=/cache \
   -e OF_WEBDAV_URL=https://user:pass@dav.example.com/OmniFocus.ofocus/ \
   omnifocus-cli of tasks --inbox
 ```
@@ -30,7 +37,7 @@ podman run --rm \
 | `OF_WEBDAV_USER` | No | WebDAV username (overrides URL-embedded user) |
 | `OF_WEBDAV_PASS` | No | WebDAV password (overrides URL-embedded password) |
 | `OF_ENCRYPTION_PASSPHRASE` | No | Decryption passphrase — defaults to WebDAV password (linked-password mode) |
-| `OF_CACHE_DIR` | No | Cache directory (default `/tmp/of-cache`) |
+| `OF_CACHE_DIR` | No | Cache directory (default repo-local `.of-cache/` when detectable, otherwise `/tmp/of-cache`) |
 
 ## Commands
 
@@ -53,7 +60,9 @@ Add to `~/.claude/settings.json`:
   "mcpServers": {
     "omnifocus": {
       "command": "podman",
-      "args": ["run", "--rm", "-i",
+        "args": ["run", "--rm", "-i",
+               "-v", "/absolute/path/to/repo/.of-cache:/cache",
+               "-e", "OF_CACHE_DIR=/cache",
                "-e", "OF_WEBDAV_URL",
                "omnifocus-cli:latest"]
     }
@@ -63,3 +72,5 @@ Add to `~/.claude/settings.json`:
 
 The default container command is `of-mcp` (MCP server mode).
 Pass `OF_WEBDAV_URL=https://user:pass@host/path/` to avoid separate user/pass vars.
+For best performance, keep the MCP container long-lived and reuse the same mounted
+`.of-cache/` directory between requests.

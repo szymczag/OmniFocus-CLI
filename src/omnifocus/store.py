@@ -22,6 +22,10 @@ is not set, the WebDAV password is used automatically.
 Cache strategy
 --------------
 The parsed model is serialised with :mod:`pickle` into ``OF_CACHE_DIR``.
+When ``OF_CACHE_DIR`` is unset, the default cache location is the repo-local
+``.of-cache/`` directory when a project root can be detected; otherwise the
+store falls back to ``/tmp/of-cache``.
+
 The cache is reused only when the current remote bundle listing matches the
 cached bundle fingerprint exactly. This avoids a 100-200 ms re-parse on every
 CLI invocation while still reflecting changes made by OmniFocus on the sync
@@ -29,9 +33,8 @@ server.
 
 Security
 --------
-The cache stores fully-decrypted model data.  ``OF_CACHE_DIR`` should be
-inside the container's ephemeral filesystem (default ``/tmp/of-cache``)
-and **not** mounted to persistent host storage unless the host is trusted.
+The cache stores fully-decrypted model data. A repo-local ``.of-cache/``
+directory should only be used on a trusted host.
 
 Usage::
 
@@ -96,6 +99,19 @@ WriteStrategy = str
 ChainShape = str
 
 
+def _default_cache_dir() -> Path:
+    """Return the default cache directory."""
+    env_value = os.environ.get("OF_CACHE_DIR")
+    if env_value:
+        return Path(env_value)
+
+    source_root = Path(__file__).resolve().parents[2]
+    if (source_root / "pyproject.toml").exists() and (source_root / "src" / "omnifocus").exists():
+        return source_root / ".of-cache"
+
+    return Path("/tmp/of-cache")  # noqa: S108
+
+
 @dataclasses.dataclass(frozen=True)
 class _CachePayload:
     """Serializable cache payload for a parsed model and bundle fingerprint."""
@@ -130,7 +146,7 @@ class OFocusStore:
         client: A :class:`~omnifocus.sync.webdav.WebDAVClient` instance.
         passphrase: Decryption passphrase, or ``None`` for unencrypted bundles.
         cache_dir: Directory for the pickle cache.  Defaults to
-            ``$OF_CACHE_DIR`` or ``/tmp/of-cache``.
+            ``$OF_CACHE_DIR`` or a repo-local ``.of-cache`` directory.
     """
 
     def __init__(
@@ -141,9 +157,7 @@ class OFocusStore:
     ) -> None:
         self._client = client
         self._passphrase = passphrase
-        self._cache_dir = cache_dir or Path(
-            os.environ.get("OF_CACHE_DIR", "/tmp/of-cache")  # noqa: S108
-        )
+        self._cache_dir = cache_dir or _default_cache_dir()
         self._cache_path = self._cache_dir / _CACHE_FILENAME
         self._writer_state_path = self._cache_dir / _WRITER_STATE_FILENAME
 
@@ -172,7 +186,7 @@ class OFocusStore:
             ``OF_ENCRYPTION_PASSPHRASE`` — decryption passphrase.  When not
             set, the WebDAV password is tried automatically (OmniFocus
             "linked password" mode uses the same credential for both).
-            ``OF_CACHE_DIR`` — cache directory (default ``/tmp/of-cache``).
+            ``OF_CACHE_DIR`` — cache directory (default repo-local ``.of-cache``).
 
         Raises:
             OFWebDAVError: If required WebDAV env vars are missing.

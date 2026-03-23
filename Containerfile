@@ -9,12 +9,16 @@
 #
 # Run CLI:
 #   podman run --rm \
+#     -v "$PWD/.of-cache":/cache \
+#     -e OF_CACHE_DIR=/cache \
 #     -e OF_WEBDAV_URL -e OF_WEBDAV_USER -e OF_WEBDAV_PASS \
 #     -e OF_ENCRYPTION_PASSPHRASE \
 #     omnifocus-cli of tasks --inbox
 #
 # MCP server (default ENTRYPOINT):
 #   podman run --rm -i \
+#     -v "$PWD/.of-cache":/cache \
+#     -e OF_CACHE_DIR=/cache \
 #     -e OF_WEBDAV_URL -e OF_WEBDAV_USER -e OF_WEBDAV_PASS \
 #     -e OF_ENCRYPTION_PASSPHRASE \
 #     omnifocus-cli
@@ -50,12 +54,11 @@ COPY pyproject.toml README.md ./
 RUN pip install --no-cache-dir --no-deps -e .
 
 # Writable cache directory for the non-root user
-RUN mkdir -p /tmp/of-cache && chown appuser /tmp/of-cache
+RUN mkdir -p /app/.of-cache /tmp/of-cache && chown -R appuser /app/.of-cache /tmp/of-cache
 
 USER appuser
 
-ENV OF_CACHE_DIR=/tmp/of-cache \
-    PYTHONUNBUFFERED=1 \
+ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 # Default: MCP server mode (stdio transport for Claude integration).

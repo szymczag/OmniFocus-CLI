@@ -14,7 +14,7 @@ import pytest
 
 from omnifocus.errors import OFEncryptionError, OFError, OFWebDAVError
 from omnifocus.models import OFModel, Project, Task
-from omnifocus.store import OFocusStore, _WriterState
+from omnifocus.store import OFocusStore, _default_cache_dir, _WriterState
 from omnifocus.sync.webdav import WebDAVClient
 from omnifocus.writer import WritePlan
 from tests.conftest import make_zip
@@ -151,6 +151,41 @@ class TestFromEnv:
         monkeypatch.setenv("OF_ENCRYPTION_PASSPHRASE", "secret")
         store = OFocusStore.from_env()
         assert store._passphrase == "secret"  # noqa: S105
+
+    def test_cache_dir_defaults_to_repo_local_dot_cache(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OF_WEBDAV_URL", "https://dav.example.com/of/")
+        monkeypatch.setenv("OF_WEBDAV_USER", "u")
+        monkeypatch.setenv("OF_WEBDAV_PASS", "p")
+        monkeypatch.delenv("OF_CACHE_DIR", raising=False)
+        store = OFocusStore.from_env()
+        assert store._cache_dir.name == ".of-cache"
+
+    def test_cache_dir_respects_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OF_WEBDAV_URL", "https://dav.example.com/of/")
+        monkeypatch.setenv("OF_WEBDAV_USER", "u")
+        monkeypatch.setenv("OF_WEBDAV_PASS", "p")
+        monkeypatch.setenv("OF_CACHE_DIR", "/custom-cache")
+        store = OFocusStore.from_env()
+        assert store._cache_dir == Path("/custom-cache")
+
+
+class TestDefaultCacheDir:
+    def test_prefers_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OF_CACHE_DIR", "/custom-cache")
+        assert _default_cache_dir() == Path("/custom-cache")
+
+    def test_defaults_to_repo_local_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("OF_CACHE_DIR", raising=False)
+        assert _default_cache_dir().name == ".of-cache"
+
+    def test_falls_back_to_tmp_when_repo_root_is_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("OF_CACHE_DIR", raising=False)
+        monkeypatch.setattr(Path, "exists", lambda self: False)
+        assert _default_cache_dir() == Path("/tmp/of-cache")  # noqa: S108
 
 
 class TestLoad:

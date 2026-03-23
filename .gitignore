@@ -70,4 +70,5 @@ htmlcov/
 /tmp/
 *.pkl
 *.pickle
+.of-cache/
 of-cache/
