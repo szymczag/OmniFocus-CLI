@@ -30,8 +30,7 @@ from __future__ import annotations
 import io
 import os
 import zipfile
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from omnifocus.models import Project, Task
 
@@ -54,13 +53,14 @@ def generate_id() -> str:
         An 11-character alphanumeric-plus identifier string.
     """
     import base64
+
     raw = os.urandom(8)
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
 def _now_utc() -> datetime:
     """Return the current UTC datetime."""
-    return datetime.now(tz=timezone.utc)
+    return datetime.now(tz=UTC)
 
 
 def _format_ts(dt: datetime) -> str:
@@ -109,11 +109,7 @@ class TransactionBuilder:
         """Render a leaf element.  Empty string text → self-closing tag."""
         if text is None or text == "":
             return f"<{tag}/>"
-        escaped = (
-            text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
+        escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         return f"<{tag}>{escaped}</{tag}>"
 
     def _project_container(
@@ -136,20 +132,20 @@ class TransactionBuilder:
         *,
         task_id: str,
         name: str,
-        parent_task_id: Optional[str],
+        parent_task_id: str | None,
         inbox: bool,
         flagged: bool,
         rank: int,
         added_dt: datetime,
         modified_dt: datetime,
-        due_dt: Optional[datetime],
-        start_dt: Optional[datetime],
-        completed_dt: Optional[datetime],
+        due_dt: datetime | None,
+        start_dt: datetime | None,
+        completed_dt: datetime | None,
         note: str,
         order: str,
-        estimated_minutes: Optional[int],
-        repetition_rule: Optional[str],
-        hidden_dt: Optional[datetime],
+        estimated_minutes: int | None,
+        repetition_rule: str | None,
+        hidden_dt: datetime | None,
         project_xml: str,
         tag_ids: tuple[str, ...],
     ) -> str:
@@ -191,20 +187,20 @@ class TransactionBuilder:
         self,
         task_id: str,
         name: str,
-        parent_task_id: Optional[str],
+        parent_task_id: str | None,
         inbox: bool,
         flagged: bool,
         rank: int,
         added_dt: datetime,
         modified_dt: datetime,
-        due_dt: Optional[datetime] = None,
-        start_dt: Optional[datetime] = None,
-        completed_dt: Optional[datetime] = None,
+        due_dt: datetime | None = None,
+        start_dt: datetime | None = None,
+        completed_dt: datetime | None = None,
         note: str = "",
         order: str = "parallel",
-        estimated_minutes: Optional[int] = None,
-        repetition_rule: Optional[str] = None,
-        hidden_dt: Optional[datetime] = None,
+        estimated_minutes: int | None = None,
+        repetition_rule: str | None = None,
+        hidden_dt: datetime | None = None,
         tag_ids: tuple[str, ...] = (),
     ) -> None:
         """Add a task element to the transaction.
@@ -255,16 +251,16 @@ class TransactionBuilder:
         project_id: str,
         name: str,
         *,
-        folder_id: Optional[str],
+        folder_id: str | None,
         status: str,
         singleton: bool,
         flagged: bool,
         rank: int,
         added_dt: datetime,
         modified_dt: datetime,
-        due_dt: Optional[datetime] = None,
-        start_dt: Optional[datetime] = None,
-        completed_dt: Optional[datetime] = None,
+        due_dt: datetime | None = None,
+        start_dt: datetime | None = None,
+        completed_dt: datetime | None = None,
         note: str = "",
         tag_ids: tuple[str, ...] = (),
     ) -> None:
@@ -307,9 +303,7 @@ class TransactionBuilder:
             deleted_dt: UTC timestamp for the deletion marker.
         """
         self._elements.append(
-            f'<task id="{task_id}">'
-            f'{self._leaf("added", _format_dt_utc(deleted_dt))}'
-            f"</task>"
+            f'<task id="{task_id}">' f'{self._leaf("added", _format_dt_utc(deleted_dt))}' f"</task>"
         )
 
     def to_xml_bytes(self) -> bytes:
@@ -353,15 +347,15 @@ class TaskWriter:
         self,
         name: str,
         *,
-        parent_task_id: Optional[str] = None,
+        parent_task_id: str | None = None,
         inbox: bool = True,
         flagged: bool = False,
-        due_dt: Optional[datetime] = None,
-        start_dt: Optional[datetime] = None,
+        due_dt: datetime | None = None,
+        start_dt: datetime | None = None,
         note: str = "",
-        estimated_minutes: Optional[int] = None,
-        task_id: Optional[str] = None,
-        rank: Optional[int] = None,
+        estimated_minutes: int | None = None,
+        task_id: str | None = None,
+        rank: int | None = None,
     ) -> tuple[str, bytes, str]:
         """Create a transaction ZIP that adds a new task.
 
@@ -471,12 +465,12 @@ class TaskWriter:
         folder_id: str | None = None,
         status: str = "active",
         flagged: bool = False,
-        due_dt: Optional[datetime] = None,
-        start_dt: Optional[datetime] = None,
+        due_dt: datetime | None = None,
+        start_dt: datetime | None = None,
         note: str = "",
-        project_id: Optional[str] = None,
+        project_id: str | None = None,
         singleton: bool = False,
-        rank: Optional[int] = None,
+        rank: int | None = None,
     ) -> tuple[str, bytes, str]:
         """Create a transaction ZIP that adds a new project."""
         now = _now_utc()
@@ -552,9 +546,7 @@ class TaskWriter:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_zip(
-        self, builder: TransactionBuilder, ts: datetime
-    ) -> tuple[str, bytes]:
+    def _build_zip(self, builder: TransactionBuilder, ts: datetime) -> tuple[str, bytes]:
         """Serialise *builder* content into a ZIP archive.
 
         Args:
@@ -565,9 +557,7 @@ class TaskWriter:
             ``(filename, zip_bytes)``
         """
         xml_bytes = builder.to_xml_bytes()
-        filename = (
-            f"{_format_ts(ts)}={self._client_id}+{self._parent_id}.zip"
-        )
+        filename = f"{_format_ts(ts)}={self._client_id}+{self._parent_id}.zip"
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:

@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import io
-import zipfile
-from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
+import zipfile
+from datetime import UTC, datetime
 
-import pytest
-
-from omnifocus.models import Task
+from omnifocus.models import Project, Task
 from omnifocus.writer import (
     TaskWriter,
     TransactionBuilder,
@@ -19,7 +17,6 @@ from omnifocus.writer import (
     generate_id,
 )
 
-UTC = timezone.utc
 NOW = datetime(2026, 3, 22, 15, 40, 11, 347_000, tzinfo=UTC)
 NS = "{http://www.omnigroup.com/namespace/OmniFocus/v2}"
 
@@ -42,7 +39,9 @@ class TestGenerateId:
     def test_url_safe_chars(self) -> None:
         for _ in range(50):
             eid = generate_id()
-            assert all(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for c in eid)
+            assert all(
+                c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for c in eid
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -70,14 +69,14 @@ class TestTimestampFormatting:
 
 
 def _parse_transaction(xml_bytes: bytes) -> ET.Element:
-    return ET.fromstring(xml_bytes.decode("utf-8"))
+    return ET.fromstring(xml_bytes.decode("utf-8"))  # noqa: S314
 
 
 class TestTransactionBuilder:
     def test_empty_builder(self) -> None:
         builder = TransactionBuilder()
         xml = builder.to_xml_bytes()
-        root = ET.fromstring(xml)
+        root = ET.fromstring(xml)  # noqa: S314
         assert root.tag == f"{NS}omnifocus"
         assert list(root) == []
 
@@ -181,7 +180,7 @@ class TestTransactionBuilder:
         builder = TransactionBuilder()
         builder.add_task(
             task_id="x",
-            name='<script>alert("xss")</script> & \'quote\'',
+            name="<script>alert(\"xss\")</script> & 'quote'",
             parent_task_id=None,
             inbox=True,
             flagged=False,
@@ -191,7 +190,7 @@ class TestTransactionBuilder:
         )
         xml_bytes = builder.to_xml_bytes()
         # Must parse without error
-        root = ET.fromstring(xml_bytes)
+        root = ET.fromstring(xml_bytes)  # noqa: S314
         task_el = root.find(f"{NS}task")
         assert task_el is not None
         name_el = task_el.find(f"{NS}name")
@@ -282,6 +281,71 @@ class TestTransactionBuilder:
         root = _parse_transaction(builder.to_xml_bytes())
         assert len(list(root)) == 3
 
+    def test_add_project_element(self) -> None:
+        builder = TransactionBuilder()
+        builder.add_project(
+            project_id="proj1",
+            name="Project One",
+            folder_id="folder1",
+            status="active",
+            singleton=True,
+            flagged=True,
+            rank=100,
+            added_dt=NOW,
+            modified_dt=NOW,
+        )
+        root = _parse_transaction(builder.to_xml_bytes())
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        project_el = task_el.find(f"{NS}project")
+        assert project_el is not None
+        folder_el = project_el.find(f"{NS}folder")
+        assert folder_el is not None
+        assert folder_el.get("idref") == "folder1"
+        status_el = project_el.find(f"{NS}status")
+        singleton_el = project_el.find(f"{NS}singleton")
+        assert status_el is not None and status_el.text == "active"
+        assert singleton_el is not None and singleton_el.text == "true"
+
+    def test_task_includes_tag_contexts(self) -> None:
+        builder = TransactionBuilder()
+        builder.add_task(
+            task_id="abc123",
+            name="Tagged task",
+            parent_task_id=None,
+            inbox=True,
+            flagged=False,
+            rank=1000,
+            added_dt=NOW,
+            modified_dt=NOW,
+            tag_ids=("tag1", "tag2"),
+        )
+        root = _parse_transaction(builder.to_xml_bytes())
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        contexts = task_el.findall(f"{NS}context")
+        assert [context.get("idref") for context in contexts] == ["tag1", "tag2"]
+
+    def test_project_includes_tag_contexts(self) -> None:
+        builder = TransactionBuilder()
+        builder.add_project(
+            project_id="proj1",
+            name="Tagged project",
+            folder_id=None,
+            status="inactive",
+            singleton=False,
+            flagged=False,
+            rank=100,
+            added_dt=NOW,
+            modified_dt=NOW,
+            tag_ids=("tagA",),
+        )
+        root = _parse_transaction(builder.to_xml_bytes())
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        contexts = task_el.findall(f"{NS}context")
+        assert [context.get("idref") for context in contexts] == ["tagA"]
+
 
 # ---------------------------------------------------------------------------
 # TaskWriter
@@ -312,11 +376,9 @@ class TestTaskWriter:
 
     def test_add_task_xml_has_task_element(self) -> None:
         writer = TaskWriter(client_id="cli01", parent_id="parent01")
-        fname, data, new_id = writer.add_task(
-            "Buy bread", inbox=True, task_id="fixed123"
-        )
+        fname, data, new_id = writer.add_task("Buy bread", inbox=True, task_id="fixed123")
         xml = _unzip_contents(data)
-        root = ET.fromstring(xml)
+        root = ET.fromstring(xml)  # noqa: S314
         task_el = root.find(f"{NS}task")
         assert task_el is not None
         assert task_el.get("id") == "fixed123"
@@ -331,7 +393,7 @@ class TestTaskWriter:
             inbox=False,
         )
         xml = _unzip_contents(data)
-        root = ET.fromstring(xml)
+        root = ET.fromstring(xml)  # noqa: S314
         task_el = root.find(f"{NS}task")
         assert task_el is not None
         parent_ref = task_el.find(f"{NS}task")
@@ -360,7 +422,7 @@ class TestTaskWriter:
         writer = TaskWriter(client_id="cli01", parent_id="p1")
         fname, data = writer.complete_task(task)
         xml = _unzip_contents(data)
-        root = ET.fromstring(xml)
+        root = ET.fromstring(xml)  # noqa: S314
         task_el = root.find(f"{NS}task")
         assert task_el is not None
         completed_el = task_el.find(f"{NS}completed")
@@ -393,3 +455,124 @@ class TestTaskWriter:
     def test_default_client_id_generated(self) -> None:
         writer = TaskWriter()
         assert len(writer._client_id) >= 10
+
+    def test_add_project_returns_tuple(self) -> None:
+        writer = TaskWriter(client_id="cli01", parent_id="parent01")
+        fname, data, project_id = writer.add_project("Launch")
+        assert fname.endswith(".zip")
+        assert b"PK" == data[:2]
+        assert len(project_id) >= 10
+
+    def test_add_project_filename_format(self) -> None:
+        writer = TaskWriter(client_id="cli01", parent_id="parent01")
+        fname, _, _ = writer.add_project("Launch")
+        assert "=cli01+parent01.zip" in fname
+
+    def test_add_project_xml_has_project_payload(self) -> None:
+        writer = TaskWriter(client_id="cli01", parent_id="parent01")
+        _, data, _ = writer.add_project(
+            "Launch",
+            project_id="proj-fixed",
+            folder_id="folder-1",
+            status="inactive",
+            flagged=True,
+        )
+        root = ET.fromstring(_unzip_contents(data))  # noqa: S314
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        assert task_el.get("id") == "proj-fixed"
+        project_el = task_el.find(f"{NS}project")
+        assert project_el is not None
+        assert project_el.find(f"{NS}status").text == "inactive"
+        assert project_el.find(f"{NS}folder").get("idref") == "folder-1"
+
+    def test_upsert_project_keeps_project_fields(self) -> None:
+        project = Project(
+            id="p1",
+            name="Engineering",
+            folder_id="f1",
+            status="inactive",
+            singleton=True,
+            rank=200,
+            added=NOW,
+            modified=NOW,
+            flagged=True,
+            due=datetime(2026, 6, 1, 19, 0, 0),
+            start=datetime(2026, 5, 1, 19, 0, 0),
+            note="Keep fields",
+            completed=None,
+            tag_ids=("tag1",),
+        )
+        writer = TaskWriter(client_id="cli01", parent_id="parent01")
+        _, data = writer.upsert_project(project, when=NOW)
+        root = ET.fromstring(_unzip_contents(data))  # noqa: S314
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        assert task_el.find(f"{NS}name").text == "Engineering"
+        assert task_el.find(f"{NS}flagged").text == "true"
+        assert task_el.find(f"{NS}note").text == "Keep fields"
+        assert task_el.find(f"{NS}context").get("idref") == "tag1"
+        project_el = task_el.find(f"{NS}project")
+        assert project_el.find(f"{NS}status").text == "inactive"
+        assert project_el.find(f"{NS}singleton").text == "true"
+
+    def test_complete_project_sets_done_and_completed(self) -> None:
+        project = Project(
+            id="p1",
+            name="Engineering",
+            folder_id="f1",
+            status="active",
+            singleton=False,
+            rank=200,
+            added=NOW,
+            modified=NOW,
+            flagged=False,
+            due=None,
+            start=None,
+            note="",
+            completed=None,
+        )
+        writer = TaskWriter(client_id="cli01", parent_id="parent01")
+        _, data = writer.complete_project(project)
+        root = ET.fromstring(_unzip_contents(data))  # noqa: S314
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        project_el = task_el.find(f"{NS}project")
+        assert project_el is not None
+        assert project_el.find(f"{NS}status").text == "done"
+        completed_el = task_el.find(f"{NS}completed")
+        assert completed_el is not None
+        assert completed_el.text is not None and completed_el.text.endswith("Z")
+
+    def test_upsert_task_includes_tag_contexts(self) -> None:
+        task = Task(
+            id="task001",
+            name="Tagged task",
+            parent_task_id=None,
+            project_id=None,
+            inbox=True,
+            completed=None,
+            flagged=False,
+            due=None,
+            start=None,
+            hidden=None,
+            note="",
+            rank=500,
+            repetition_rule=None,
+            estimated_minutes=None,
+            tag_ids=("tag1", "tag2"),
+            added=NOW,
+            modified=NOW,
+        )
+        writer = TaskWriter(client_id="cli01", parent_id="parent01")
+        _, data = writer.upsert_task(task, when=NOW)
+        root = ET.fromstring(_unzip_contents(data))  # noqa: S314
+        task_el = root.find(f"{NS}task")
+        assert task_el is not None
+        contexts = task_el.findall(f"{NS}context")
+        assert [context.get("idref") for context in contexts] == ["tag1", "tag2"]
+
+    def test_writer_uses_explicit_parent_without_guessing(self) -> None:
+        writer = TaskWriter(client_id="cli01", parent_id="remote-head-123")
+        fname, _, _ = writer.add_task("Test task")
+        assert "=cli01+remote-head-123.zip" in fname
