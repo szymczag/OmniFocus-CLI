@@ -39,6 +39,10 @@ _MAX_RETRIES = 3
 # Base delay in seconds between retries (doubles each attempt)
 _RETRY_BASE_DELAY = 0.5
 
+# Supported HTTP authentication schemes (selected via OF_WEBDAV_AUTH)
+_DEFAULT_AUTH_METHOD = "basic"
+_VALID_AUTH_METHODS = ("basic", "digest")
+
 
 class WebDAVClient:
     """Async WebDAV client scoped to a single ``.ofocus`` bundle directory.
@@ -47,9 +51,12 @@ class WebDAVClient:
         base_url: Full URL to the directory containing bundle files,
             e.g. ``https://dav.example.com/omnifocus/OmniFocus.ofocus/``.
             A trailing slash is required.
-        username: WebDAV Basic Auth username.
-        password: WebDAV Basic Auth password.  Never logged.
+        username: WebDAV auth username.
+        password: WebDAV auth password.  Never logged.
         timeout: HTTP request timeout in seconds.
+        auth_method: HTTP authentication scheme, ``"basic"`` (default) or
+            ``"digest"``.  The value is case-insensitive; anything else raises
+            :class:`~omnifocus.errors.OFWebDAVError`.
     """
 
     def __init__(
@@ -58,12 +65,26 @@ class WebDAVClient:
         username: str,
         password: str,
         timeout: float = 30.0,
+        auth_method: str = _DEFAULT_AUTH_METHOD,
     ) -> None:
         if not base_url.endswith("/"):
             base_url += "/"
         self._base_url = base_url
+
+        normalized = (auth_method or _DEFAULT_AUTH_METHOD).strip().lower()
+        if normalized not in _VALID_AUTH_METHODS:
+            raise OFWebDAVError(
+                f"Unsupported WebDAV auth method: {auth_method!r}. "
+                f"Set OF_WEBDAV_AUTH to one of: {', '.join(_VALID_AUTH_METHODS)}."
+            )
+        self._auth_method = normalized
+        auth: httpx.Auth = (
+            httpx.DigestAuth(username, password)
+            if normalized == "digest"
+            else httpx.BasicAuth(username, password)
+        )
         self._client = httpx.AsyncClient(
-            auth=(username, password),
+            auth=auth,
             timeout=httpx.Timeout(timeout),
             follow_redirects=True,
         )
@@ -100,9 +121,14 @@ class WebDAVClient:
             OF_WEBDAV_USER: Username (overrides URL-embedded user).
             OF_WEBDAV_PASS: Password (overrides URL-embedded password).
 
+        Optional variables:
+            OF_WEBDAV_AUTH: Authentication scheme, ``basic`` (default) or
+                ``digest``.
+
         Raises:
-            OFWebDAVError: If ``OF_WEBDAV_URL`` is missing, or if credentials
-                cannot be found in either the URL or the separate variables.
+            OFWebDAVError: If ``OF_WEBDAV_URL`` is missing, if credentials
+                cannot be found in either the URL or the separate variables,
+                or if ``OF_WEBDAV_AUTH`` names an unsupported scheme.
         """
         raw_url = os.environ.get("OF_WEBDAV_URL", "")
         if not raw_url:
@@ -134,7 +160,14 @@ class WebDAVClient:
         if missing:
             raise OFWebDAVError(f"Missing required environment variables: {', '.join(missing)}")
 
-        return cls(base_url=clean_url, username=username, password=password)
+        auth_method = os.environ.get("OF_WEBDAV_AUTH") or _DEFAULT_AUTH_METHOD
+
+        return cls(
+            base_url=clean_url,
+            username=username,
+            password=password,
+            auth_method=auth_method,
+        )
 
     # ------------------------------------------------------------------
     # Core operations

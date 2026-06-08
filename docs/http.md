@@ -36,6 +36,7 @@ The HTTPS API is intentionally strict:
 | `OF_WEBDAV_URL` | Usually | Required for endpoints that need bundle access. |
 | `OF_WEBDAV_USER` | No | Explicit WebDAV username override. |
 | `OF_WEBDAV_PASS` | No | Explicit WebDAV password override. |
+| `OF_WEBDAV_AUTH` | No | WebDAV authentication scheme: `basic` (default) or `digest`. |
 | `OF_ENCRYPTION_PASSPHRASE` | No | Bundle decryption passphrase. |
 | `OF_CACHE_DIR` | No | Writable cache directory. |
 

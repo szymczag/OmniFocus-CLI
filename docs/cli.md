@@ -12,6 +12,25 @@ of --version
 of sync
 ```
 
+## Connection and Authentication
+
+The CLI is configured entirely through environment variables. At minimum, set the WebDAV bundle
+URL and credentials:
+
+```text
+OF_WEBDAV_URL    WebDAV bundle URL (credentials may be embedded as https://user:pass@host/path/)
+OF_WEBDAV_USER   Explicit WebDAV username (overrides URL-embedded credentials)
+OF_WEBDAV_PASS   Explicit WebDAV password (overrides URL-embedded credentials)
+OF_WEBDAV_AUTH   Authentication scheme: basic (default) or digest
+```
+
+By default the client authenticates with HTTP Basic. If your WebDAV server requires Digest
+authentication (a common cause of a `401` even when the username and password are correct)
+set `OF_WEBDAV_AUTH=digest`. Any other value is rejected at startup.
+
+See the [README environment-variable table](../README.md#environment-variables) for the full list,
+including `OF_ENCRYPTION_PASSPHRASE` and `OF_CACHE_DIR`.
+
 ## Tasks
 
 ```text

@@ -44,6 +44,9 @@ podman run --rm -i of mcp
 }
 ```
 
+If your WebDAV server requires Digest authentication rather than Basic, add
+`-e OF_WEBDAV_AUTH=digest` to the `args` list (the default is `basic`).
+
 ## Tool Surface
 
 ### Tasks

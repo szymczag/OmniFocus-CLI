@@ -63,6 +63,7 @@ Environment:
   OF_WEBDAV_URL             WebDAV bundle URL (required)
   OF_WEBDAV_USER            WebDAV username (optional override)
   OF_WEBDAV_PASS            WebDAV password (optional override)
+  OF_WEBDAV_AUTH            WebDAV authentication scheme: 'basic' (default) or 'digest'
   OF_ENCRYPTION_PASSPHRASE  Encryption passphrase (defaults to WebDAV password)
   OF_CACHE_DIR              Cache directory (default: /tmp/of-cache)
 

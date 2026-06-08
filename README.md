@@ -214,6 +214,7 @@ If you prefer to keep credentials out of the URL, pass `OF_WEBDAV_USER`,
 | `OF_WEBDAV_URL` | Yes | WebDAV bundle URL. Credentials may be embedded as `https://user:pass@host/path/`. |
 | `OF_WEBDAV_USER` | No | Explicit WebDAV username. Overrides URL-embedded credentials. |
 | `OF_WEBDAV_PASS` | No | Explicit WebDAV password. Overrides URL-embedded credentials. |
+| `OF_WEBDAV_AUTH` | No | HTTP authentication scheme: `basic` (default) or `digest`. Set to `digest` if your server rejects Basic auth with `401`. |
 | `OF_ENCRYPTION_PASSPHRASE` | No | Bundle decryption passphrase. Defaults to the WebDAV password. |
 | `OF_CACHE_DIR` | No | Cache directory. Defaults to a repo-local `.of-cache/` when detectable, otherwise `/tmp/of-cache`. |
 
