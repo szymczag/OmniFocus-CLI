@@ -7,6 +7,8 @@ __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 import asyncio
 import dataclasses
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -58,6 +60,26 @@ from omnifocus.mcp_server import (
 from omnifocus.models import Folder, OFModel, Project, Tag, Task
 
 NOW = datetime(2026, 3, 22, 12, 0, 0, tzinfo=UTC)
+# Reference "today" for the due/today task filters. Chosen after t1's due date
+# (2026-04-01) so that t1 reads as overdue while t2 is due exactly today.
+TODAY = datetime(2026, 4, 15, 12, 0, 0, tzinfo=UTC)
+
+
+@contextmanager
+def _frozen_review_clock(model: OFModel) -> Iterator[None]:
+    """Patch the loaded model and pin the review clock to ``NOW``.
+
+    Review-due state is computed against ``datetime.now(UTC)`` in the service
+    layer, so the fixture's review timestamps (which treat ``NOW`` as "today")
+    only behave as intended when the clock is pinned. Pinning keeps the
+    due/not-due split deterministic regardless of the real wall-clock date.
+    """
+    with (
+        patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)),
+        patch("omnifocus.api_service.datetime") as mock_datetime,
+    ):
+        mock_datetime.now.return_value = NOW
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +182,7 @@ def _make_model() -> OFModel:
         inbox=True,
         completed=None,
         flagged=False,
-        due=datetime.today().replace(hour=19, minute=0, second=0, microsecond=0),
+        due=TODAY.replace(tzinfo=None, hour=19, minute=0, second=0, microsecond=0),
         start=None,
         hidden=None,
         note="",
@@ -343,10 +365,16 @@ class TestHandleListTasks:
 
     @pytest.mark.asyncio
     async def test_today_filter(self) -> None:
-        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+        # The "today" filter compares due dates against datetime.today(); pin it
+        # so the due-today (t2) and overdue (t1) split stays deterministic.
+        with (
+            patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())),
+            patch("omnifocus.api_service.datetime") as mock_datetime,
+        ):
+            mock_datetime.today.return_value = TODAY
             result = await _handle_list_tasks({"today": True})
         data = _parse_response(result)
-        # "today" includes tasks due today and overdue tasks.
+        # "today" includes tasks due today (t2) and overdue tasks (t1).
         assert {task["id"] for task in data} == {"t1", "t2"}
 
     @pytest.mark.asyncio
@@ -1056,7 +1084,7 @@ class TestHandleListProjects:
 class TestHandleListProjectsForReview:
     @pytest.mark.asyncio
     async def test_returns_due_review_projects_only_by_default(self) -> None:
-        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+        with _frozen_review_clock(_make_model()):
             result = await _handle_list_projects_for_review({})
         data = _parse_response(result)
         assert [project["id"] for project in data] == ["p1", "p3"]
@@ -1064,7 +1092,7 @@ class TestHandleListProjectsForReview:
 
     @pytest.mark.asyncio
     async def test_can_include_non_due_review_projects(self) -> None:
-        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=_make_model())):
+        with _frozen_review_clock(_make_model()):
             result = await _handle_list_projects_for_review({"due_only": False})
         data = _parse_response(result)
         assert {project["id"] for project in data} == {"p1", "p2", "p3"}
@@ -1080,7 +1108,7 @@ class TestHandleListProjectsForReview:
             next_review=None,
             review_interval="bogus",
         )
-        with patch("omnifocus.mcp_server._load_model", AsyncMock(return_value=model)):
+        with _frozen_review_clock(model):
             result = await _handle_list_projects_for_review({"due_only": False})
         data = _parse_response(result)
         assert data[-1]["id"] == "p4"
