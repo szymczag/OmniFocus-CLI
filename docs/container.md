@@ -96,6 +96,7 @@ podman run --rm --pull=always ghcr.io/szymczag/omnifocus-cli:latest --version
 | `OF_WEBDAV_URL` | Yes | WebDAV bundle URL |
 | `OF_WEBDAV_USER` | No | Explicit WebDAV username |
 | `OF_WEBDAV_PASS` | No | Explicit WebDAV password |
+| `OF_WEBDAV_AUTH` | No | WebDAV authentication scheme: `basic` (default) or `digest` |
 | `OF_ENCRYPTION_PASSPHRASE` | No | Bundle decryption passphrase |
 | `OF_CACHE_DIR` | No | Writable cache directory |
 | `OF_HTTP_HOST` | No | HTTPS API bind host (default `127.0.0.1`) |

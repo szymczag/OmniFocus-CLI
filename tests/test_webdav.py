@@ -131,6 +131,79 @@ class TestFromEnv:
 
 
 # ---------------------------------------------------------------------------
+# Authentication scheme selection (OF_WEBDAV_AUTH)
+# ---------------------------------------------------------------------------
+
+
+class TestAuthMethod:
+    def test_default_is_basic(self) -> None:
+        client = WebDAVClient(BASE_URL, "u", "p")
+        assert client._auth_method == "basic"
+        assert isinstance(client._client._auth, httpx.BasicAuth)
+
+    def test_explicit_digest(self) -> None:
+        client = WebDAVClient(BASE_URL, "u", "p", auth_method="digest")
+        assert client._auth_method == "digest"
+        assert isinstance(client._client._auth, httpx.DigestAuth)
+
+    def test_value_is_case_insensitive(self) -> None:
+        client = WebDAVClient(BASE_URL, "u", "p", auth_method="DIGEST")
+        assert client._auth_method == "digest"
+
+    def test_invalid_method_raises(self) -> None:
+        with pytest.raises(OFWebDAVError, match="Unsupported WebDAV auth method"):
+            WebDAVClient(BASE_URL, "u", "p", auth_method="ntlm")
+
+    def test_from_env_defaults_to_basic(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OF_WEBDAV_URL", BASE_URL)
+        monkeypatch.setenv("OF_WEBDAV_USER", "u")
+        monkeypatch.setenv("OF_WEBDAV_PASS", "p")
+        monkeypatch.delenv("OF_WEBDAV_AUTH", raising=False)
+        client = WebDAVClient.from_env()
+        assert client._auth_method == "basic"
+
+    def test_from_env_selects_digest(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OF_WEBDAV_URL", BASE_URL)
+        monkeypatch.setenv("OF_WEBDAV_USER", "u")
+        monkeypatch.setenv("OF_WEBDAV_PASS", "p")
+        monkeypatch.setenv("OF_WEBDAV_AUTH", "digest")
+        client = WebDAVClient.from_env()
+        assert client._auth_method == "digest"
+        assert isinstance(client._client._auth, httpx.DigestAuth)
+
+    def test_from_env_invalid_auth_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OF_WEBDAV_URL", BASE_URL)
+        monkeypatch.setenv("OF_WEBDAV_USER", "u")
+        monkeypatch.setenv("OF_WEBDAV_PASS", "p")
+        monkeypatch.setenv("OF_WEBDAV_AUTH", "kerberos")
+        with pytest.raises(OFWebDAVError, match="OF_WEBDAV_AUTH"):
+            WebDAVClient.from_env()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_digest_auth_responds_to_challenge(self) -> None:
+        """A digest client must answer a 401 challenge and resend with credentials."""
+        url = BASE_URL + "file.zip"
+        challenge = (
+            'Digest realm="test", qop="auth", '
+            'nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093", '
+            'opaque="5ccc069c403ebaf9f0171e9517f40e41", algorithm=MD5'
+        )
+        route = respx.get(url).mock(
+            side_effect=[
+                httpx.Response(401, headers={"WWW-Authenticate": challenge}),
+                httpx.Response(200, content=b"ok"),
+            ]
+        )
+        async with WebDAVClient(BASE_URL, "user", "pass", auth_method="digest") as client:
+            data = await client.get_file("file.zip")
+        assert data == b"ok"
+        # httpx performs the challenge/response handshake within a single request call.
+        assert route.call_count == 2
+        assert route.calls.last.request.headers["Authorization"].startswith("Digest ")
+
+
+# ---------------------------------------------------------------------------
 # list_bundle
 # ---------------------------------------------------------------------------
 

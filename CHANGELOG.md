@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Add the `OF_WEBDAV_AUTH` environment variable to select the WebDAV HTTP
+  authentication scheme (`basic` by default, or `digest` for servers that
+  reject Basic auth with `401`)
+
 ### Changed
 
 - Remove the temporary `pip-audit` ignore for `CVE-2026-4539` now that a
