@@ -19,7 +19,9 @@ from __future__ import annotations
 __author__ = "Maciej Szymczak <maciej@szymczak.at>"
 
 import asyncio
+import base64
 import logging
+from collections.abc import Generator
 from urllib.parse import urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
@@ -38,6 +40,82 @@ _MAX_RETRIES = 3
 
 # Base delay in seconds between retries (doubles each attempt)
 _RETRY_BASE_DELAY = 0.5
+
+
+class _ChallengeAuth(httpx.Auth):
+    """HTTP auth that tries Basic first, then falls back to Digest.
+
+    Omni Sync Server advertises only ``WWW-Authenticate: Digest`` (no Basic),
+    so a plain Basic auth tuple always 401s against it. This class sends the
+    first request with Basic credentials and, on a 401 Digest challenge,
+    transparently replays the request using ``httpx.DigestAuth``. Servers that
+    accept Basic are unaffected (one preemptive Basic attempt, as before).
+    """
+
+    def __init__(self, username: str, password: str) -> None:
+        self._username = username
+        self._password = password
+        self._mode: str | None = None  # None = undecided, "basic", "digest"
+
+    def auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response]:
+        if self._mode == "digest":
+            yield from httpx.DigestAuth(self._username, self._password).auth_flow(request)
+            return
+
+        token = base64.b64encode(f"{self._username}:{self._password}".encode()).decode("ascii")
+        request.headers["Authorization"] = f"Basic {token}"
+        response = yield request
+
+        challenge = (response.headers.get("www-authenticate") or "").lower()
+        if response.status_code == 401 and "digest" in challenge:
+            self._mode = "digest"
+            request.headers.pop("Authorization", None)
+            yield from httpx.DigestAuth(self._username, self._password).auth_flow(request)
+            return
+
+        # Not a Digest challenge: the received response is final. httpx's auth
+        # protocol ends the flow here (no further yield) and returns the
+        # response that was just sent in.
+        self._mode = "basic"
+
+
+def _resolve_redirect_url(base_url: str) -> str:
+    """Resolve host-level HTTP redirects on the bundle URL.
+
+    Omni Sync Server redirects ``sync.omnigroup.com`` to a backend host such
+    as ``sync3.omnigroup.com``. httpx's DigestAuth does not interoperate with
+    redirects (the digest is computed against the pre-redirect host and the
+    backend rejects it), so the client pins the base URL to the final host
+    up front. Redirects that change the request path are not followed
+    (a login-wall redirect would otherwise poison the base URL).
+
+    Errors are swallowed: on any failure the original URL is used unchanged.
+    """
+    try:
+        probe = httpx.Client(follow_redirects=False, timeout=15.0)
+    except Exception:  # pragma: no cover - client construction is trivial
+        return base_url
+
+    try:
+        with probe:
+            original_path = httpx.URL(base_url).path
+            current = base_url
+            for _ in range(5):
+                response = probe.request("PROPFIND", current, headers={"Depth": "0"})
+                if response.status_code not in (301, 302, 303, 307, 308):
+                    break
+                location = response.headers.get("location")
+                if not location:
+                    break
+                resolved = str(httpx.URL(current).join(location))
+                if httpx.URL(resolved).path != original_path:
+                    break
+                current = resolved
+            return current
+    except httpx.RequestError:
+        return base_url
+    except Exception:  # pragma: no cover - defensive
+        return base_url
 
 
 class WebDAVClient:
@@ -63,7 +141,7 @@ class WebDAVClient:
             base_url += "/"
         self._base_url = base_url
         self._client = httpx.AsyncClient(
-            auth=(username, password),
+            auth=_ChallengeAuth(username, password),
             timeout=httpx.Timeout(timeout),
             follow_redirects=True,
         )
@@ -134,7 +212,7 @@ class WebDAVClient:
         if missing:
             raise OFWebDAVError(f"Missing required environment variables: {', '.join(missing)}")
 
-        return cls(base_url=clean_url, username=username, password=password)
+        return cls(base_url=_resolve_redirect_url(clean_url), username=username, password=password)
 
     # ------------------------------------------------------------------
     # Core operations

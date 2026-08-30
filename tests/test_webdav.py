@@ -11,7 +11,7 @@ import pytest
 import respx
 
 from omnifocus.errors import OFWebDAVError
-from omnifocus.sync.webdav import WebDAVClient
+from omnifocus.sync.webdav import WebDAVClient, _ChallengeAuth, _resolve_redirect_url
 
 BASE_URL = "https://dav.example.com/omnifocus/OmniFocus.ofocus/"
 
@@ -148,7 +148,7 @@ class TestFromEnv:
 
         assert client._base_url == BASE_URL
         auth = client._client.auth
-        assert isinstance(auth, httpx.BasicAuth)
+        assert isinstance(auth, _ChallengeAuth)
         request = next(auth.auth_flow(httpx.Request("GET", BASE_URL)))
         assert request.headers["Authorization"] == "Basic c2VjcmV0LXVzZXI6c2VjcmV0LXBhc3M="
 
@@ -432,3 +432,140 @@ class TestUrlNormalisation:
     def test_trailing_slash_preserved(self) -> None:
         client = WebDAVClient(BASE_URL, "u", "p")
         assert client._base_url == BASE_URL
+
+
+# ---------------------------------------------------------------------------
+# _ChallengeAuth (Basic first, Digest fallback)
+# ---------------------------------------------------------------------------
+
+_DIGEST_CHALLENGE = {
+    "www-authenticate": 'Digest realm="Omni Sync", nonce="abc123", algorithm=MD5, qop="auth"'
+}
+
+
+class TestChallengeAuth:
+    def _digest_401(self) -> httpx.Response:
+        resp = httpx.Response(401, headers=_DIGEST_CHALLENGE)
+        resp.request = httpx.Request("GET", BASE_URL)
+        return resp
+
+    def test_first_request_carries_basic_header(self) -> None:
+        auth = _ChallengeAuth("user", "pass")
+        gen = auth.auth_flow(httpx.Request("GET", BASE_URL))
+        request = next(gen)
+        # base64("user:pass")
+        assert request.headers["Authorization"] == "Basic dXNlcjpwYXNz"
+        assert auth._mode is None
+
+    def test_basic_success_returns_response(self) -> None:
+        auth = _ChallengeAuth("user", "pass")
+        gen = auth.auth_flow(httpx.Request("GET", BASE_URL))
+        next(gen)
+        # Flow ends after the Basic request; httpx returns the 207 it sent in.
+        with pytest.raises(StopIteration):
+            gen.send(httpx.Response(207))
+        assert auth._mode == "basic"
+
+    def test_basic_401_without_digest_challenge_returns_response(self) -> None:
+        auth = _ChallengeAuth("user", "pass")
+        gen = auth.auth_flow(httpx.Request("GET", BASE_URL))
+        next(gen)
+        with pytest.raises(StopIteration):
+            gen.send(httpx.Response(401, headers={"www-authenticate": 'Basic realm="x"'}))
+        assert auth._mode == "basic"
+
+    def test_falls_back_to_digest_on_challenge(self) -> None:
+        auth = _ChallengeAuth("user", "pass")
+        gen = auth.auth_flow(httpx.Request("GET", BASE_URL))
+        assert next(gen).headers["Authorization"].startswith("Basic ")
+        # Digest pre-flight: fresh DigestAuth has no cached challenge
+        preflight = gen.send(self._digest_401())
+        assert "Authorization" not in preflight.headers
+        # Digest-authed replay
+        authed = gen.send(self._digest_401())
+        assert authed.headers["Authorization"].startswith("Digest ")
+        assert auth._mode == "digest"
+        # Server accepts; flow completes
+        with pytest.raises(StopIteration):
+            gen.send(httpx.Response(207))
+
+    def test_digest_mode_skips_basic_on_subsequent_requests(self) -> None:
+        auth = _ChallengeAuth("user", "pass")
+        gen = auth.auth_flow(httpx.Request("GET", BASE_URL))
+        next(gen)
+        gen.send(self._digest_401())  # triggers fallback; mode flips to "digest"
+        assert auth._mode == "digest"
+        # Next request goes straight to digest flow, never sends Basic
+        gen2 = auth.auth_flow(httpx.Request("GET", BASE_URL))
+        request = next(gen2)
+        assert "Authorization" not in request.headers
+        # Drive the digest flow to completion so the branch's return is covered
+        authed = gen2.send(self._digest_401())
+        assert authed.headers["Authorization"].startswith("Digest ")
+        with pytest.raises(StopIteration):
+            gen2.send(httpx.Response(207))
+
+
+# ---------------------------------------------------------------------------
+# _resolve_redirect_url
+# ---------------------------------------------------------------------------
+
+
+class TestResolveRedirectUrl:
+    def test_no_redirect_returns_original(self) -> None:
+        with respx.mock:
+            respx.route(method="PROPFIND", url=BASE_URL).mock(return_value=httpx.Response(401))
+            assert _resolve_redirect_url(BASE_URL) == BASE_URL
+
+    def test_follows_host_redirect_preserving_path(self) -> None:
+        backend = "https://backend.example.com/omnifocus/OmniFocus.ofocus/"
+        with respx.mock:
+            respx.route(method="PROPFIND", url=BASE_URL).mock(
+                return_value=httpx.Response(302, headers={"location": backend})
+            )
+            respx.route(method="PROPFIND", url=backend).mock(return_value=httpx.Response(401))
+            assert _resolve_redirect_url(BASE_URL) == backend
+
+    def test_does_not_follow_path_changing_redirect(self) -> None:
+        with respx.mock:
+            respx.route(method="PROPFIND", url=BASE_URL).mock(
+                return_value=httpx.Response(
+                    302, headers={"location": "https://dav.example.com/login"}
+                )
+            )
+            assert _resolve_redirect_url(BASE_URL) == BASE_URL
+
+    def test_stops_when_location_missing(self) -> None:
+        with respx.mock:
+            respx.route(method="PROPFIND", url=BASE_URL).mock(return_value=httpx.Response(302))
+            assert _resolve_redirect_url(BASE_URL) == BASE_URL
+
+    def test_follows_multiple_hops(self) -> None:
+        hop1 = "https://h1.example.com/omnifocus/OmniFocus.ofocus/"
+        hop2 = "https://h2.example.com/omnifocus/OmniFocus.ofocus/"
+        with respx.mock:
+            respx.route(method="PROPFIND", url=BASE_URL).mock(
+                return_value=httpx.Response(302, headers={"location": hop1})
+            )
+            respx.route(method="PROPFIND", url=hop1).mock(
+                return_value=httpx.Response(302, headers={"location": hop2})
+            )
+            respx.route(method="PROPFIND", url=hop2).mock(return_value=httpx.Response(401))
+            assert _resolve_redirect_url(BASE_URL) == hop2
+
+    def test_redirect_loop_capped_at_five_hops(self) -> None:
+        targets = [f"https://h{i}.example.com/omnifocus/OmniFocus.ofocus/" for i in range(1, 8)]
+        urls = [BASE_URL] + targets
+        with respx.mock:
+            for i in range(len(urls) - 1):
+                respx.route(method="PROPFIND", url=urls[i]).mock(
+                    return_value=httpx.Response(302, headers={"location": urls[i + 1]})
+                )
+            assert _resolve_redirect_url(BASE_URL) == targets[4]
+
+    def test_request_error_returns_original(self) -> None:
+        with respx.mock:
+            respx.route(method="PROPFIND", url=BASE_URL).mock(
+                side_effect=[httpx.ConnectError("boom")]
+            )
+            assert _resolve_redirect_url(BASE_URL) == BASE_URL
